@@ -1,0 +1,7 @@
+{
+  "listen": "127.0.0.1:8787",
+  "database_path": "data/sync.db",
+  "token_file": "token.txt",
+  "log_path": "logs/server.jsonl",
+  "max_upload_bytes": 67108864
+}

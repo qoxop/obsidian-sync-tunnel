@@ -1,0 +1,25 @@
+# Build output
+/dist/
+/plugin/main.js
+/plugin/node_modules/
+
+# Runtime data and secrets
+/data/
+/dev-token.txt
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.jsonl
+token.txt
+
+# Local configuration
+/config.json
+/.env
+/.env.*
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
