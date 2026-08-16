@@ -318,9 +318,29 @@ func (s *Store) apply(ctx context.Context, vaultID, filePath, deviceID, operatio
 }
 
 func operationResult(ctx context.Context, tx *sql.Tx, vaultID, deviceID, operationID string) (Change, bool, string, bool, error) {
+	return queryOperationResult(ctx, tx, vaultID, deviceID, operationID)
+}
+
+func (s *Store) GetOperation(ctx context.Context, vaultID, deviceID, operationID string) (Change, bool, bool, error) {
+	if err := ValidateID("vault ID", vaultID); err != nil {
+		return Change{}, false, false, err
+	}
+	if err := ValidateID("device ID", deviceID); err != nil {
+		return Change{}, false, false, err
+	}
+	if !operationIDPattern.MatchString(operationID) {
+		return Change{}, false, false, errors.New("invalid operation ID")
+	}
+	change, changed, _, found, err := queryOperationResult(ctx, s.db, vaultID, deviceID, operationID)
+	return change, changed, found, err
+}
+
+func queryOperationResult(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, vaultID, deviceID, operationID string) (Change, bool, string, bool, error) {
 	var fingerprint, encoded string
 	var changed bool
-	err := tx.QueryRowContext(ctx, `SELECT fingerprint, change_json, changed FROM operations WHERE vault_id=? AND device_id=? AND operation_id=?`, vaultID, deviceID, operationID).
+	err := q.QueryRowContext(ctx, `SELECT fingerprint, change_json, changed FROM operations WHERE vault_id=? AND device_id=? AND operation_id=?`, vaultID, deviceID, operationID).
 		Scan(&fingerprint, &encoded, &changed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Change{}, false, "", false, nil

@@ -117,6 +117,18 @@ func TestOperationIDRetryReturnsOriginalRevision(t *testing.T) {
 	}
 	var first mutationPayload
 	decodeJSON(t, firstResponse.Body.Bytes(), &first)
+	queryRequest := authorizedRequest(http.MethodGet, "/api/v2/vaults/test/operations/11111111-1111-4111-8111-111111111111", nil)
+	queryRequest.Header.Set("X-Device-ID", "test-device")
+	queryResponse := httptest.NewRecorder()
+	handler.ServeHTTP(queryResponse, queryRequest)
+	if queryResponse.Code != http.StatusOK {
+		t.Fatalf("operation query status=%d body=%s", queryResponse.Code, queryResponse.Body)
+	}
+	var queried mutationPayload
+	decodeJSON(t, queryResponse.Body.Bytes(), &queried)
+	if queried.Change.Revision != first.Change.Revision || !queried.Changed {
+		t.Fatalf("unexpected queried operation: %+v", queried)
+	}
 
 	secondData := []byte("second")
 	secondRequest := fileRequest(http.MethodPut, path, first.Change.Revision, secondData)
@@ -150,6 +162,13 @@ func TestOperationIDRetryReturnsOriginalRevision(t *testing.T) {
 	handler.ServeHTTP(reusedResponse, reusedRequest)
 	if reusedResponse.Code != http.StatusBadRequest || !bytes.Contains(reusedResponse.Body.Bytes(), []byte("operation_id_reused")) {
 		t.Fatalf("reuse status=%d body=%s", reusedResponse.Code, reusedResponse.Body)
+	}
+	missingRequest := authorizedRequest(http.MethodGet, "/api/v2/vaults/test/operations/33333333-3333-4333-8333-333333333333", nil)
+	missingRequest.Header.Set("X-Device-ID", "test-device")
+	missingResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingResponse, missingRequest)
+	if missingResponse.Code != http.StatusNotFound {
+		t.Fatalf("missing operation status=%d body=%s", missingResponse.Code, missingResponse.Body)
 	}
 }
 

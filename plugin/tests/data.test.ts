@@ -15,6 +15,7 @@ describe("migrateData", () => {
     expect(data.needsFullScan).toBe(true);
     expect(data.scanCache).toEqual({});
     expect(data.pendingPaths).toEqual({});
+    expect(data.outbox).toEqual({});
   });
 
   it("keeps an existing schema-v1 installation initialized and schedules a snapshot", () => {

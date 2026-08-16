@@ -1,6 +1,6 @@
 import type { InitialSyncMode, PersistedData, PluginSettings, SyncProfile } from "./types";
 
-export const DATA_SCHEMA_VERSION = 3;
+export const DATA_SCHEMA_VERSION = 4;
 
 export function migrateData(raw: unknown, generatedDeviceId = generateDeviceId()): PersistedData {
   const parsed = isRecord(raw) ? raw : {};
@@ -41,7 +41,8 @@ export function migrateData(raw: unknown, generatedDeviceId = generateDeviceId()
     pendingPaths: isRecord(parsed.pendingPaths) ? sanitizePendingPaths(parsed.pendingPaths) : {},
     needsFullScan: typeof parsed.needsFullScan === "boolean" ? parsed.needsFullScan : true,
     lastFullScanAt: nonNegativeNumber(parsed.lastFullScanAt),
-    lastIntegrityScanAt: nonNegativeNumber(parsed.lastIntegrityScanAt)
+    lastIntegrityScanAt: nonNegativeNumber(parsed.lastIntegrityScanAt),
+    outbox: isRecord(parsed.outbox) ? sanitizeOutbox(parsed.outbox) : {}
   };
 }
 
@@ -70,4 +71,17 @@ function sanitizePendingPaths(value: Record<string, unknown>): Record<string, nu
 
 function nonNegativeNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function sanitizeOutbox(value: Record<string, unknown>): PersistedData["outbox"] {
+  const result: PersistedData["outbox"] = {};
+  for (const [operationId, raw] of Object.entries(value)) {
+    if (!isRecord(raw) || raw.operationId !== operationId) continue;
+    if (raw.kind !== "put" && raw.kind !== "delete") continue;
+    if (typeof raw.path !== "string" || typeof raw.hash !== "string") continue;
+    const numbers = [raw.baseRevision, raw.modifiedAt, raw.size, raw.createdAt];
+    if (!numbers.every((item) => typeof item === "number" && Number.isFinite(item) && item >= 0)) continue;
+    result[operationId] = raw as unknown as PersistedData["outbox"][string];
+  }
+  return result;
 }

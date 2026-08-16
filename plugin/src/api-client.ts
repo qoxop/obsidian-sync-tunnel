@@ -66,7 +66,20 @@ export class SyncApiClient {
     });
   }
 
-  async putFile(path: string, baseRevision: number, modifiedAt: number, hash: string, data: ArrayBuffer, operationId = crypto.randomUUID()): Promise<MutationResponse> {
+  async findOperation(operationId: string): Promise<MutationResponse | null> {
+    try {
+      return await this.jsonRequest<MutationResponse>({
+        url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/operations/${encodeURIComponent(operationId)}`,
+        method: "GET",
+        headers: { "X-Device-ID": this.options.deviceId }
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404 && error.code === "not_found") return null;
+      throw error;
+    }
+  }
+
+  async putFile(path: string, baseRevision: number, modifiedAt: number, hash: string, data: ArrayBuffer, operationId: string = crypto.randomUUID()): Promise<MutationResponse> {
     return this.jsonRequest<MutationResponse>({
       url: `${this.vaultUrl()}/file?path=${encodeURIComponent(path)}`,
       method: "PUT",
@@ -76,7 +89,7 @@ export class SyncApiClient {
     });
   }
 
-  async deleteFile(path: string, baseRevision: number, modifiedAt: number, operationId = crypto.randomUUID()): Promise<MutationResponse> {
+  async deleteFile(path: string, baseRevision: number, modifiedAt: number, operationId: string = crypto.randomUUID()): Promise<MutationResponse> {
     return this.jsonRequest<MutationResponse>({
       url: `${this.vaultUrl()}/file?path=${encodeURIComponent(path)}`,
       method: "DELETE",

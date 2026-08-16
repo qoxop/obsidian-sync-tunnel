@@ -27,6 +27,7 @@ describe("SyncEngine snapshot reconciliation", () => {
     };
     let uploadedConflict = "";
     const client = {
+      serverInfo: async () => ({ capabilities: [] }),
       status: async () => ({ latest_revision: 5, max_upload_bytes: 1024 }),
       listSnapshot: async () => ({
         files: [remoteChange],
@@ -60,7 +61,7 @@ describe("SyncEngine snapshot reconciliation", () => {
       listChanges: async () => ({ changes: [], cursor: 6, has_more: false })
     } as unknown as SyncApiClient;
     const data: PersistedData = {
-      schemaVersion: 2,
+      schemaVersion: 4,
       settings: {
         serverUrl: "https://sync.example.com",
         vaultId: "test-vault",
@@ -83,7 +84,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       pendingPaths: {},
       needsFullScan: true,
       lastFullScanAt: 0,
-      lastIntegrityScanAt: 0
+      lastIntegrityScanAt: 0,
+      outbox: {}
     };
     let persistCount = 0;
     const engine = new SyncEngine(vault, data, client, scanner, async () => {
@@ -136,6 +138,7 @@ describe("SyncEngine snapshot reconciliation", () => {
     let uploadedBase = 0;
     let deletedBase = 0;
     const client = {
+      serverInfo: async () => ({ capabilities: [] }),
       status: async () => ({ latest_revision: 5, max_upload_bytes: 1024 }),
       listSnapshot: async () => ({ files: snapshot, snapshot_revision: 5, cursor: "remote-only.md", has_more: false }),
       putFile: async (path: string, baseRevision: number, modifiedAt: number, hash: string, content: ArrayBuffer) => {
@@ -173,7 +176,7 @@ describe("SyncEngine snapshot reconciliation", () => {
       listChanges: async () => ({ changes: [], cursor: 7, has_more: false })
     } as unknown as SyncApiClient;
     const data: PersistedData = {
-      schemaVersion: 2,
+      schemaVersion: 4,
       settings: testSettings(),
       cursor: 0,
       filterFingerprint: "",
@@ -184,7 +187,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       pendingPaths: {},
       needsFullScan: true,
       lastFullScanAt: 0,
-      lastIntegrityScanAt: 0
+      lastIntegrityScanAt: 0,
+      outbox: {}
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -207,6 +211,7 @@ describe("SyncEngine snapshot reconciliation", () => {
     const scanner = new VaultScanner(vault, [], []);
     let uploadedPath = "";
     const client = {
+      serverInfo: async () => ({ capabilities: [] }),
       status: async () => ({ latest_revision: 0, max_upload_bytes: 1024 }),
       listSnapshot: async () => ({ files: [], snapshot_revision: 0, cursor: "", has_more: false }),
       putFile: async (path: string, _baseRevision: number, modifiedAt: number, hash: string, content: ArrayBuffer) => {
@@ -230,7 +235,7 @@ describe("SyncEngine snapshot reconciliation", () => {
       listChanges: async () => ({ changes: [], cursor: 1, has_more: false })
     } as unknown as SyncApiClient;
     const data: PersistedData = {
-      schemaVersion: 2,
+      schemaVersion: 4,
       settings: testSettings(),
       cursor: 0,
       filterFingerprint: "",
@@ -241,7 +246,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       pendingPaths: {},
       needsFullScan: true,
       lastFullScanAt: 0,
-      lastIntegrityScanAt: 0
+      lastIntegrityScanAt: 0,
+      outbox: {}
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -266,6 +272,7 @@ describe("SyncEngine snapshot reconciliation", () => {
     const now = Date.now();
     const deletedPaths: string[] = [];
     const client = {
+      serverInfo: async () => ({ capabilities: [] }),
       status: async () => ({ latest_revision: 2, max_upload_bytes: 1024 }),
       deleteFile: async (path: string, baseRevision: number) => {
         deletedPaths.push(path);
@@ -288,7 +295,7 @@ describe("SyncEngine snapshot reconciliation", () => {
       listChanges: async () => ({ changes: [], cursor: 3, has_more: false })
     } as unknown as SyncApiClient;
     const data: PersistedData = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       settings: testSettings(),
       cursor: 2,
       filterFingerprint: scanner.filterFingerprint(),
@@ -305,7 +312,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       pendingPaths: { "deleted.md": 10 },
       needsFullScan: false,
       lastFullScanAt: now,
-      lastIntegrityScanAt: now
+      lastIntegrityScanAt: now,
+      outbox: {}
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -328,7 +336,7 @@ describe("SyncEngine snapshot reconciliation", () => {
     const scanner = new VaultScanner(vault, [], []);
     const now = Date.now();
     const data: PersistedData = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       settings: testSettings(),
       cursor: 1,
       filterFingerprint: scanner.filterFingerprint(),
@@ -339,9 +347,11 @@ describe("SyncEngine snapshot reconciliation", () => {
       pendingPaths: { "note.md": 10 },
       needsFullScan: false,
       lastFullScanAt: now,
-      lastIntegrityScanAt: now
+      lastIntegrityScanAt: now,
+      outbox: {}
     };
     const client = {
+      serverInfo: async () => ({ capabilities: [] }),
       status: async () => ({ latest_revision: 1, max_upload_bytes: 1024 }),
       putFile: async () => {
         throw new Error("Unexpected upload");
@@ -359,6 +369,140 @@ describe("SyncEngine snapshot reconciliation", () => {
     await engine.run();
 
     expect(data.pendingPaths).toEqual({ "note.md": 11 });
+  });
+
+  it("recovers a committed outbox operation after restart without uploading again", async () => {
+    const content = bytes("content");
+    const hash = await sha256(content);
+    const operationId = "11111111-1111-4111-8111-111111111111";
+    const files = new Map<string, ArrayBuffer>([["note.md", content]]);
+    const adapter = createMemoryAdapter(files);
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+    const now = Date.now();
+    const committed: Change = {
+      revision: 5,
+      path: "note.md",
+      blob_hash: hash,
+      size: content.byteLength,
+      modified_at: 1,
+      deleted: false,
+      device_id: "test-device"
+    };
+    const data: PersistedData = {
+      schemaVersion: 4,
+      settings: testSettings(),
+      cursor: 4,
+      filterFingerprint: scanner.filterFingerprint(),
+      initialSyncCompleted: true,
+      pendingInitialSyncMode: null,
+      files: {},
+      scanCache: { "note.md": { hash, size: content.byteLength, modifiedAt: 1 } },
+      pendingPaths: {},
+      needsFullScan: false,
+      lastFullScanAt: now,
+      lastIntegrityScanAt: now,
+      outbox: {
+        [operationId]: {
+          operationId,
+          kind: "put",
+          path: "note.md",
+          baseRevision: 0,
+          modifiedAt: 1,
+          hash,
+          size: content.byteLength,
+          createdAt: 1
+        }
+      }
+    };
+    const client = {
+      serverInfo: async () => ({ capabilities: ["operation-id"] }),
+      findOperation: async (id: string) => {
+        expect(id).toBe(operationId);
+        return { change: committed, changed: true };
+      },
+      status: async () => ({ latest_revision: 5, max_upload_bytes: 1024 }),
+      putFile: async () => {
+        throw new Error("A committed operation must not be uploaded again");
+      },
+      deleteFile: async () => {
+        throw new Error("Unexpected delete");
+      },
+      listChanges: async () => ({ changes: [], cursor: 5, has_more: false })
+    } as unknown as SyncApiClient;
+    let persistCount = 0;
+    const engine = new SyncEngine(vault, data, client, scanner, async () => {
+      persistCount += 1;
+    });
+
+    const summary = await engine.run();
+
+    expect(data.files["note.md"]?.revision).toBe(5);
+    expect(data.outbox).toEqual({});
+    expect(summary.uploaded).toBe(1);
+    expect(persistCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("persists an outbox entry before sending a new mutation", async () => {
+    const content = bytes("new note");
+    const hash = await sha256(content);
+    const files = new Map<string, ArrayBuffer>([["new.md", content]]);
+    const adapter = createMemoryAdapter(files);
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+    const data: PersistedData = {
+      schemaVersion: 4,
+      settings: testSettings(),
+      cursor: 0,
+      filterFingerprint: scanner.filterFingerprint(),
+      initialSyncCompleted: true,
+      pendingInitialSyncMode: null,
+      files: {},
+      scanCache: {},
+      pendingPaths: {},
+      needsFullScan: true,
+      lastFullScanAt: 0,
+      lastIntegrityScanAt: 0,
+      outbox: {}
+    };
+    let stagedBeforeRequest = false;
+    const client = {
+      serverInfo: async () => ({ capabilities: ["operation-id"] }),
+      findOperation: async () => null,
+      status: async () => ({ latest_revision: 0, max_upload_bytes: 1024 }),
+      putFile: async (_path: string, _base: number, modifiedAt: number, requestHash: string, requestContent: ArrayBuffer, operationId: string) => {
+        stagedBeforeRequest = Object.hasOwn(data.outbox, operationId);
+        expect(requestHash).toBe(hash);
+        return {
+          changed: true,
+          change: {
+            revision: 1,
+            path: "new.md",
+            blob_hash: requestHash,
+            size: requestContent.byteLength,
+            modified_at: modifiedAt,
+            deleted: false,
+            device_id: "test-device"
+          }
+        };
+      },
+      deleteFile: async () => {
+        throw new Error("Unexpected delete");
+      },
+      listChanges: async () => ({ changes: [], cursor: 1, has_more: false })
+    } as unknown as SyncApiClient;
+    let persistedStagedEntry = false;
+    const engine = new SyncEngine(vault, data, client, scanner, async () => {
+      if (Object.keys(data.outbox).length > 0) persistedStagedEntry = true;
+    });
+
+    const summary = await engine.run();
+
+    expect(stagedBeforeRequest).toBe(true);
+    expect(persistedStagedEntry).toBe(true);
+    expect(data.outbox).toEqual({});
+    expect(data.files["new.md"]?.revision).toBe(1);
+    expect(summary.uploaded).toBe(1);
   });
 });
 

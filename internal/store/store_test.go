@@ -107,6 +107,13 @@ func TestOperationIDReturnsOriginalCommittedResult(t *testing.T) {
 	if err != nil || !changed || retried.Revision != first.Revision {
 		t.Fatalf("operation retry: change=%+v changed=%v err=%v", retried, changed, err)
 	}
+	stored, storedChanged, found, err := db.GetOperation(ctx, "vault-a", "desktop", firstOperation)
+	if err != nil || !found || !storedChanged || stored.Revision != first.Revision {
+		t.Fatalf("stored operation: change=%+v changed=%v found=%v err=%v", stored, storedChanged, found, err)
+	}
+	if _, _, found, err := db.GetOperation(ctx, "vault-a", "other-device", firstOperation); err != nil || found {
+		t.Fatalf("operation must be device scoped: found=%v err=%v", found, err)
+	}
 
 	_, _, err = db.PutWithOperation(ctx, "vault-a", "note.md", "desktop", firstOperation, 0, 1001, Hash(firstData), firstData)
 	var reused *OperationReuseError

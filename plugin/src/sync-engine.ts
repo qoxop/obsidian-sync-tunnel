@@ -3,7 +3,7 @@ import { DataAdapter, Vault } from "obsidian";
 import { ApiError, SyncApiClient } from "./api-client";
 import { sha256 } from "./hash";
 import { conflictPath, pathRequiresObsidianRestart } from "./path";
-import { Change, FileState, InitialSyncMode, LocalFile, PersistedData, SyncSummary } from "./types";
+import { Change, FileState, InitialSyncMode, LocalFile, OutboxOperation, PersistedData, SyncSummary } from "./types";
 import { VaultScanner } from "./vault-scanner";
 
 const FULL_SCAN_INTERVAL_MS = 60 * 60 * 1000;
@@ -11,6 +11,7 @@ const INTEGRITY_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export class SyncEngine {
   private running = false;
+  private supportsOperationIDs = false;
   private readonly adapter: DataAdapter;
 
   constructor(
@@ -38,6 +39,12 @@ export class SyncEngine {
     try {
       const initialMode = this.data.initialSyncCompleted ? null : this.data.pendingInitialSyncMode;
       if (!this.data.initialSyncCompleted && !initialMode) throw new Error("Initial sync requires explicit confirmation");
+      const serverInfo = await this.client.serverInfo();
+      this.supportsOperationIDs = serverInfo.capabilities.includes("operation-id");
+      if (!this.supportsOperationIDs && Object.keys(this.data.outbox).length > 0) {
+        throw new Error("服务器不支持 operation-id，无法安全恢复尚未确认的写入；请先重新升级服务端");
+      }
+      if (this.supportsOperationIDs) await this.resumeOutbox(summary);
       const status = await this.client.status();
       const filterFingerprint = this.scanner.filterFingerprint();
       const filterChanged = this.data.filterFingerprint !== filterFingerprint;
@@ -159,18 +166,21 @@ export class SyncEngine {
       const currentHash = await sha256(content);
       const stat = await this.adapter.stat(path);
       if (!stat || stat.type !== "file") continue;
+      const operationID = await this.stageOperation("put", path, previous?.revision ?? 0, stat.mtime, currentHash, content.byteLength);
       try {
-        const result = await this.client.putFile(path, previous?.revision ?? 0, stat.mtime, currentHash, content);
+        const result = await this.client.putFile(path, previous?.revision ?? 0, stat.mtime, currentHash, content, operationID);
         this.data.files[path] = stateFromChange(result.change);
         this.data.scanCache[path] = {
           hash: currentHash,
           size: content.byteLength,
           modifiedAt: stat.mtime
         };
+        await this.completeOperation(operationID);
         if (result.changed) summary.uploaded += 1;
         else summary.skipped += 1;
       } catch (error) {
         if (!(error instanceof ApiError) || error.code !== "revision_conflict" || !error.current) throw error;
+        await this.discardOperation(operationID);
         await this.preserveConflict(path, content);
         summary.conflicts += 1;
         await this.applyRemoteChange(error.current, summary, false);
@@ -180,13 +190,17 @@ export class SyncEngine {
     for (const [path, previous] of Object.entries(this.data.files)) {
       if (previous.deleted || localFiles.has(path) || this.scanner.isExcluded(path)) continue;
       if (deletionCandidates && !deletionCandidates.has(path)) continue;
+      const modifiedAt = Date.now();
+      const operationID = await this.stageOperation("delete", path, previous.revision, modifiedAt, "", 0);
       try {
-        const result = await this.client.deleteFile(path, previous.revision, Date.now());
+        const result = await this.client.deleteFile(path, previous.revision, modifiedAt, operationID);
         this.data.files[path] = stateFromChange(result.change);
+        await this.completeOperation(operationID);
         if (result.changed) summary.deletedRemote += 1;
         else summary.skipped += 1;
       } catch (error) {
         if (!(error instanceof ApiError) || error.code !== "revision_conflict" || !error.current) throw error;
+        await this.discardOperation(operationID);
         summary.conflicts += 1;
         await this.applyRemoteChange(error.current, summary);
       }
@@ -296,6 +310,136 @@ export class SyncEngine {
     for (const [path, queuedAt] of Object.entries(snapshot)) {
       if (this.data.pendingPaths[path] === queuedAt) delete this.data.pendingPaths[path];
     }
+  }
+
+  private async stageOperation(
+    kind: OutboxOperation["kind"],
+    path: string,
+    baseRevision: number,
+    modifiedAt: number,
+    hash: string,
+    size: number
+  ): Promise<string | undefined> {
+    if (!this.supportsOperationIDs) return undefined;
+    const operationId = crypto.randomUUID();
+    this.data.outbox[operationId] = {
+      operationId,
+      kind,
+      path,
+      baseRevision,
+      modifiedAt,
+      hash,
+      size,
+      createdAt: Date.now()
+    };
+    await this.persist();
+    return operationId;
+  }
+
+  private async completeOperation(operationID: string | undefined): Promise<void> {
+    if (!operationID) return;
+    // Save the returned file revision while the outbox entry still exists. If
+    // this save or the process fails, the next run can query the same operation.
+    await this.persist();
+    delete this.data.outbox[operationID];
+  }
+
+  private async discardOperation(operationID: string | undefined): Promise<void> {
+    if (!operationID) return;
+    delete this.data.outbox[operationID];
+    await this.persist();
+  }
+
+  private async resumeOutbox(summary: SyncSummary): Promise<void> {
+    const operations = Object.values(this.data.outbox).sort((left, right) => left.createdAt - right.createdAt);
+    for (const operation of operations) {
+      const committed = await this.client.findOperation(operation.operationId);
+      if (committed) {
+        await this.acceptRecoveredOperation(operation, committed.change, committed.changed, summary);
+        continue;
+      }
+      if (this.scanner.isExcluded(operation.path)) {
+        await this.abandonUncommittedOperation(operation);
+        continue;
+      }
+      const exists = await this.adapter.exists(operation.path);
+      if (operation.kind === "put") {
+        if (!exists) {
+          await this.abandonUncommittedOperation(operation);
+          continue;
+        }
+        const content = await this.adapter.readBinary(operation.path);
+        if (content.byteLength !== operation.size || await sha256(content) !== operation.hash) {
+          await this.abandonUncommittedOperation(operation);
+          continue;
+        }
+        try {
+          const result = await this.client.putFile(
+            operation.path,
+            operation.baseRevision,
+            operation.modifiedAt,
+            operation.hash,
+            content,
+            operation.operationId
+          );
+          await this.acceptRecoveredOperation(operation, result.change, result.changed, summary);
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.code !== "revision_conflict" || !error.current) throw error;
+          await this.discardOperation(operation.operationId);
+          await this.preserveConflict(operation.path, content);
+          summary.conflicts += 1;
+          await this.applyRemoteChange(error.current, summary, false);
+        }
+        continue;
+      }
+      if (exists) {
+        await this.abandonUncommittedOperation(operation);
+        continue;
+      }
+      try {
+        const result = await this.client.deleteFile(
+          operation.path,
+          operation.baseRevision,
+          operation.modifiedAt,
+          operation.operationId
+        );
+        await this.acceptRecoveredOperation(operation, result.change, result.changed, summary);
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.code !== "revision_conflict" || !error.current) throw error;
+        await this.discardOperation(operation.operationId);
+        summary.conflicts += 1;
+        await this.applyRemoteChange(error.current, summary);
+      }
+    }
+  }
+
+  private async acceptRecoveredOperation(
+    operation: OutboxOperation,
+    change: Change,
+    changed: boolean,
+    summary: SyncSummary
+  ): Promise<void> {
+    this.data.files[operation.path] = stateFromChange(change);
+    if (change.deleted) delete this.data.scanCache[operation.path];
+    this.queuePath(operation.path);
+    if (changed) {
+      if (operation.kind === "put") summary.uploaded += 1;
+      else summary.deletedRemote += 1;
+    } else {
+      summary.skipped += 1;
+    }
+    await this.completeOperation(operation.operationId);
+    await this.persist();
+  }
+
+  private async abandonUncommittedOperation(operation: OutboxOperation): Promise<void> {
+    delete this.data.outbox[operation.operationId];
+    this.queuePath(operation.path);
+    await this.persist();
+  }
+
+  private queuePath(path: string): void {
+    this.data.pendingPaths[path] = Math.max(Date.now(), (this.data.pendingPaths[path] ?? 0) + 1);
   }
 }
 

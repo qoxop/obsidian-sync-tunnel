@@ -28,6 +28,17 @@ export interface ScanCacheEntry {
   modifiedAt: number;
 }
 
+export interface OutboxOperation {
+  operationId: string;
+  kind: "put" | "delete";
+  path: string;
+  baseRevision: number;
+  modifiedAt: number;
+  hash: string;
+  size: number;
+  createdAt: number;
+}
+
 export interface PersistedData {
   schemaVersion: number;
   settings: PluginSettings;
@@ -41,6 +52,7 @@ export interface PersistedData {
   needsFullScan: boolean;
   lastFullScanAt: number;
   lastIntegrityScanAt: number;
+  outbox: Record<string, OutboxOperation>;
 }
 
 export type InitialSyncMode = "merge" | "remote" | "local";

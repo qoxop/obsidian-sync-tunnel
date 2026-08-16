@@ -31,6 +31,7 @@ func New(db *store.Store, token string, maxUploadBytes int64, version string, lo
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("GET /api/v2/server-info", api.serverInfo)
 	mux.HandleFunc("GET /api/v2/vaults/{vault}/snapshot", api.snapshot)
+	mux.HandleFunc("GET /api/v2/vaults/{vault}/operations/{operation}", api.operation)
 	mux.HandleFunc("GET /api/v1/vaults/{vault}/status", api.status)
 	mux.HandleFunc("GET /api/v1/vaults/{vault}/changes", api.changes)
 	mux.HandleFunc("GET /api/v1/vaults/{vault}/blobs/{hash}", api.blob)
@@ -128,6 +129,24 @@ func (a *API) snapshot(w http.ResponseWriter, r *http.Request) {
 		"cursor":            cursor,
 		"has_more":          hasMore,
 	})
+}
+
+func (a *API) operation(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.Header.Get("X-Device-ID")
+	if deviceID == "" {
+		writeError(w, http.StatusBadRequest, "missing_device", "X-Device-ID is required")
+		return
+	}
+	change, changed, found, err := a.store.GetOperation(r.Context(), r.PathValue("vault"), deviceID, r.PathValue("operation"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "not_found", "operation not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"change": change, "changed": changed})
 }
 
 func (a *API) blob(w http.ResponseWriter, r *http.Request) {
