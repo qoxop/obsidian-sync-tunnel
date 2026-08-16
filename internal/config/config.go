@@ -13,11 +13,12 @@ import (
 const defaultMaxUploadBytes int64 = 64 * 1024 * 1024
 
 type Config struct {
-	Listen         string `json:"listen"`
-	DatabasePath   string `json:"database_path"`
-	TokenFile      string `json:"token_file"`
-	LogPath        string `json:"log_path"`
-	MaxUploadBytes int64  `json:"max_upload_bytes"`
+	Listen           string `json:"listen"`
+	DatabasePath     string `json:"database_path"`
+	TokenFile        string `json:"token_file"`
+	LogPath          string `json:"log_path"`
+	MaxUploadBytes   int64  `json:"max_upload_bytes"`
+	AllowNonLoopback bool   `json:"allow_non_loopback"`
 }
 
 func Default() Config {
@@ -61,10 +62,10 @@ func (c Config) Validate() error {
 	if err != nil {
 		return fmt.Errorf("invalid listen address: %w", err)
 	}
-	if host != "localhost" {
+	if !c.AllowNonLoopback && host != "localhost" {
 		ip := net.ParseIP(host)
 		if ip == nil || !ip.IsLoopback() {
-			return errors.New("listen address must use localhost or a loopback IP")
+			return errors.New("listen address must use localhost or a loopback IP unless allow_non_loopback is explicitly enabled")
 		}
 	}
 	if c.DatabasePath == "" {

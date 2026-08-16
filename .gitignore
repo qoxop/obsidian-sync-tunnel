@@ -6,6 +6,9 @@
 # Runtime data and secrets
 /data/
 /dev-token.txt
+/runtime-data/
+/runtime-backups/
+/secrets/
 *.db
 *.db-shm
 *.db-wal
@@ -17,6 +20,7 @@ token.txt
 /config.json
 /.env
 /.env.*
+!/.env.example
 
 # Editor and OS files
 .DS_Store

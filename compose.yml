@@ -1,0 +1,52 @@
+name: obsidian-sync-tunnel
+
+services:
+  sync-server:
+    image: obsidian-sync-tunnel:${OBSIDIAN_SYNC_VERSION:-0.1.0}
+    build:
+      context: .
+      args:
+        VERSION: ${OBSIDIAN_SYNC_VERSION:-0.1.0}
+    container_name: obsidian-sync-server
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - name: sync-http
+        target: 8787
+        published: "${OBSIDIAN_SYNC_PORT:-8787}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+        app_protocol: http
+    command:
+      - serve
+      - --listen
+      - 0.0.0.0:8787
+      - --allow-non-loopback
+      - --database
+      - /data/sync.db
+      - --token-file
+      - /run/secrets/sync_api_token
+      - --log
+      - /data/server.jsonl
+      - --max-upload-bytes
+      - "${OBSIDIAN_SYNC_MAX_UPLOAD_BYTES:-67108864}"
+    volumes:
+      - type: bind
+        source: ${OBSIDIAN_SYNC_DATA_DIR:-./runtime-data}
+        target: /data
+        bind:
+          create_host_path: false
+    secrets:
+      - sync_api_token
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 20s
+
+secrets:
+  sync_api_token:
+    file: ${OBSIDIAN_SYNC_TOKEN_FILE:-./secrets/api-token.txt}

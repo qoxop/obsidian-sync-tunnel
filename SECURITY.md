@@ -4,7 +4,8 @@ This project is an early self-hosted MVP. Do not expose the origin listener, com
 
 ## Deployment baseline
 
-- Keep the server bound to a loopback address. The configuration validator rejects non-loopback listeners.
+- Keep the host-published port bound to `127.0.0.1`. The container explicitly opts into an internal non-loopback listener so Docker NAT can reach it; Compose must never publish it on `0.0.0.0`.
+- Keep the API token in the read-only Compose secret file, not in an environment variable or image layer.
 - Publish it only through Cloudflare Tunnel.
 - Use the server Bearer Token and preferably a Cloudflare Access Service Token as a second layer.
 - Store credentials in the server's ACL-restricted token file and Obsidian SecretStorage.

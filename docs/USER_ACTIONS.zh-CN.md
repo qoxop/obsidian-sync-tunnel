@@ -1,25 +1,104 @@
-# 用户配合操作清单（Windows）
+# 用户配合操作清单（Docker Desktop + Cloudflare Tunnel）
 
-代码可以自动完成本机文件、构建和服务配置，但 Cloudflare 账号授权、域名选择、管理员权限、Obsidian SecretStorage 录入和真实 Vault 备份必须由你完成。
+Go 同步服务由 Docker Desktop 承载；SQLite 和日志通过 bind mount 保存在 Windows 宿主机。`cloudflared` 仍作为独立 Windows 服务运行，并访问映射到 `127.0.0.1` 的容器端口。
+
+账号授权、域名选择、管理员权限、Obsidian SecretStorage 录入和真实 Vault 备份必须由你完成。
 
 ## A. 在使用任何真实笔记前
 
 - [ ] 准备一个全新的测试 Vault，禁止直接拿主 Vault 做首次测试；
 - [ ] 给真实 Vault 做一份不在同步目录内的完整离线备份；
 - [ ] 确认备份包含隐藏的 `.obsidian` 目录，并随机恢复一两个文件验证备份可用；
-- [ ] 决定一个 Vault ID，例如 `personal-notes`。同一 Vault 的设备必须一致，不同 Vault 必须不同；
-- [ ] 给每台设备决定唯一 Device ID，例如 `desktop-home`、`laptop-work`、`phone`。
-- [ ] 测试时关闭 Obsidian 官方 Sync、Syncthing、网盘双向同步等其他实时同步器，避免两个同步系统相互制造变更；
-- [ ] 检查其他插件的 `data.json` 是否含明文 API Key。完整同步会把这些文件写入本机 SQLite；若不能接受，先把对应路径加入排除列表。
+- [ ] 决定 Vault ID，例如 `personal-notes`。同一 Vault 的设备必须一致，不同 Vault 必须不同；
+- [ ] 给每台设备决定唯一 Device ID，例如 `desktop-home`、`laptop-work`、`phone`；
+- [ ] 测试时关闭 Obsidian 官方 Sync、Syncthing、网盘双向同步等其他实时同步器；
+- [ ] 检查其他插件的 `data.json` 是否含明文 API Key。完整同步会把这些文件写入宿主机 SQLite；不能接受时先加入排除列表。
 
-## B. 准备 Cloudflare
+## B. 确认 Docker Desktop
+
+- [ ] 启动 Docker Desktop；
+- [ ] 确认 Docker Desktop 设置为随 Windows 登录启动；
+- [ ] 在 PowerShell 运行以下命令并确认 Client、Server、Compose 都能返回版本：
+
+```powershell
+docker version
+docker compose version
+```
+
+无需进入 WSL，也不需要在 WSL 中维护数据。Docker Desktop 内部仍使用 Linux VM，但 bind mount 的源目录是明确的 Windows 路径。
+
+## C. 初始化宿主机数据和 Token
+
+普通 PowerShell，从仓库根目录运行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\docker-init.ps1
+```
+
+默认会创建：
+
+```text
+<仓库>\.env                         Compose 本地参数，不提交 Git
+<仓库>\runtime-data\                SQLite 和 JSON 日志
+<仓库>\secrets\api-token.txt       只读挂载到容器的 API Token
+```
+
+如希望把数据放到其他 Windows 磁盘：
+
+```powershell
+.\scripts\docker-init.ps1 `
+  -DataDirectory 'D:\ObsidianSync\data' `
+  -TokenFile 'D:\ObsidianSync\secrets\api-token.txt'
+```
+
+你必须：
+
+- [ ] 把脚本首次显示的 API Token 保存到密码管理器；
+- [ ] 不截图、不提交、不写进 Vault 普通笔记；
+- [ ] 完成插件 SecretStorage 录入后删除任何额外临时明文副本；
+- [ ] 记录所选择的数据目录，以便备份和重装 Docker Desktop 后重新挂载。
+
+已有 `.env` 时脚本不会覆盖。确实需要重写路径或端口时，显式使用 `-ForceConfig`；这不会删除 SQLite 或 Token。
+
+## D. 构建并启动 Go 容器
+
+```powershell
+.\scripts\docker-up.ps1
+```
+
+脚本会构建 Linux 镜像、启动 Compose 服务并等待 Docker 健康检查成功。检查结果：
+
+```powershell
+docker compose ps
+Invoke-RestMethod http://127.0.0.1:8787/healthz
+.\scripts\docker-logs.ps1 -Tail 100
+```
+
+预期：
+
+- 容器 `obsidian-sync-server` 状态为 `healthy`；
+- 宿主机只出现 `127.0.0.1:8787`，不应是 `0.0.0.0:8787`；
+- 数据目录中出现 `sync.db`、`sync.db-wal`、`sync.db-shm` 和 `server.jsonl`；
+- `docker compose down` 后这些宿主机文件仍存在。
+
+如果 8787 已占用：
+
+```powershell
+.\scripts\docker-init.ps1 -HostPort 18787 -ForceConfig
+.\scripts\docker-up.ps1
+```
+
+之后 Cloudflare Origin 也必须改为 `http://127.0.0.1:18787`。
+
+## E. 准备 Cloudflare Tunnel
 
 - [ ] 拥有 Cloudflare 账号；
 - [ ] 准备一个由 Cloudflare 管理 DNS 的域名；
 - [ ] 在 Cloudflare Dashboard 的 **Networking > Tunnels** 创建 remotely-managed Tunnel；
 - [ ] 为 Tunnel 添加 Public Hostname，例如 `sync.example.com`；
 - [ ] Service 类型选择 HTTP，Origin URL 填 `http://127.0.0.1:8787`；
-- [ ] 从 Tunnel 的 “Add a replica” 页面复制 Windows 安装命令或 Tunnel Token；
+- [ ] 从 Tunnel 的 “Add a replica” 页面取得 Windows Tunnel Token；
 - [ ] 不要把 Tunnel Token 发到聊天、提交到 Git 或写进普通脚本。
 
 官方入口：
@@ -28,149 +107,133 @@
 - [创建 Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/)
 - [Tunnel Token](https://developers.cloudflare.com/tunnel/advanced/tunnel-tokens/)
 
-推荐但可选的第二层保护：
-
-- [ ] 在 Cloudflare Zero Trust 中为 `sync.example.com` 创建 Self-hosted Access Application；
-- [ ] 创建 Service Token；
-- [ ] Access Policy 使用 Service Auth，并只允许该 Service Token；
-- [ ] 保存 Client ID 和 Client Secret。Secret 之后放入 Obsidian SecretStorage；
-- [ ] 注意 Access 规则也会保护 `/healthz`，公网健康检查需要相同凭据或单独策略。
-
-## C. 构建项目
-
-在普通 PowerShell 中，从仓库根目录运行：
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\build.ps1
-```
-
-预期产物：
-
-```text
-dist\server\obsidian-sync-server.exe
-dist\plugin\obsidian-sync-tunnel\main.js
-dist\plugin\obsidian-sync-tunnel\manifest.json
-dist\plugin\obsidian-sync-tunnel\styles.css
-dist\obsidian-sync-tunnel-plugin-0.1.0.zip
-```
-
-## D. 安装 Go 同步服务
-
-用“以管理员身份运行”的 PowerShell：
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\install-server.ps1
-```
-
-脚本会：
-
-1. 安装文件到 `C:\ProgramData\ObsidianSyncTunnel`；
-2. 首次生成 32 字节随机同步 Token；
-3. 限制 Token 和配置文件 ACL；
-4. 创建并启动自动启动的 `ObsidianSyncTunnel` Windows 服务；
-5. 在终端显示同步 Token。
-
-你必须：
-
-- [ ] 把同步 Token 临时保存到密码管理器；
-- [ ] 不截图、不提交、不放进 Vault 普通笔记；
-- [ ] 完成插件 SecretStorage 录入后删除任何临时明文副本。
-
-检查本机服务：
-
-```powershell
-Get-Service ObsidianSyncTunnel
-Invoke-RestMethod http://127.0.0.1:8787/healthz
-```
-
-## E. 安装 cloudflared 服务
+## F. 安装 cloudflared Windows 服务
 
 - [ ] 从官方页面安装最新 Windows x64 MSI 或 EXE；
-- [ ] 以管理员身份运行 Cloudflare Dashboard 提供的 `cloudflared.exe service install <TOKEN>`；
-- [ ] 检查服务：`Get-Service cloudflared`；
-- [ ] 访问 `https://sync.example.com/healthz`，应返回 `status: ok`；
-- [ ] Windows 版不会自动更新，安排定期人工更新。
-
-也可以使用仓库脚本，它不会保存 Token：
+- [ ] 用管理员 PowerShell 运行：
 
 ```powershell
+Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\install-cloudflare-tunnel.ps1
 ```
 
-脚本会安全提示输入 Token，避免把 Token 留在 PowerShell 命令历史中。
+脚本会安全提示输入 Tunnel Token，不把它写入仓库或 PowerShell 命令历史。
 
-## F. 安装 Obsidian 插件
+检查：
 
-对每个设备的 Vault：
+```powershell
+Get-Service cloudflared
+Invoke-RestMethod https://sync.example.com/healthz
+```
 
-1. 关闭 Obsidian 或先禁用旧版本插件；
-2. 创建 `<Vault>\.obsidian\plugins\obsidian-sync-tunnel`；
-3. 把 `dist\plugin\obsidian-sync-tunnel` 中的三个文件复制进去；
-4. 启动 Obsidian；
-5. **Settings > Community plugins** 中启用 Sync Tunnel；
-6. 打开插件设置。
+- [ ] `cloudflared` 服务状态为 Running；
+- [ ] 公网健康检查返回 `status: ok`；
+- [ ] Windows 版 `cloudflared` 不会自动更新，安排定期人工升级。
 
-Obsidian 官方手动安装要求复制 `main.js`、`manifest.json` 和可选的 `styles.css` 到插件 ID 对应目录。开发时应始终使用专用测试 Vault：[官方插件开发指引](https://docs.obsidian.md/Plugins/Getting%20started/Build%20a%20plugin)。
+推荐但可选的第二层保护：
 
-## G. 配置插件
+- [ ] 在 Cloudflare Zero Trust 中为主机名创建 Self-hosted Access Application；
+- [ ] 创建 Service Token；
+- [ ] Access Policy 使用 Service Auth，并只允许该 Service Token；
+- [ ] 保存 Client ID 和 Client Secret；
+- [ ] 注意 Access 也会保护 `/healthz`，公网检查需要同样的凭据或单独策略。
+
+## G. 构建和安装 Obsidian 插件
+
+插件仍通过本机 Node 工具链构建：
+
+```powershell
+.\scripts\build.ps1
+.\scripts\install-plugin.ps1 -VaultPath '你的测试 Vault 路径'
+```
+
+也可以手工把以下三个文件复制到 `<Vault>\.obsidian\plugins\obsidian-sync-tunnel`：
+
+```text
+dist\plugin\obsidian-sync-tunnel\main.js
+dist\plugin\obsidian-sync-tunnel\manifest.json
+dist\plugin\obsidian-sync-tunnel\styles.css
+```
+
+启动或重载 Obsidian，在 **Settings > Community plugins** 中启用 Sync Tunnel。开发和首次同步必须使用专用测试 Vault：[Obsidian 官方插件开发指引](https://docs.obsidian.md/Plugins/Getting%20started/Build%20a%20plugin)。
+
+## H. 配置插件
 
 - [ ] Server URL：`https://sync.example.com`；
 - [ ] Vault ID：填 A 步决定的值；
 - [ ] Device ID：每台设备填不同值；
-- [ ] API token：在 SecretStorage 组件中新建/选择条目，内容填 D 步 Token；
+- [ ] API token：在 SecretStorage 组件中新建/选择条目，内容填 C 步 Token；
 - [ ] 若启用了 Access，填写 Client ID，并把 Client Secret 放入另一个 SecretStorage 条目；
 - [ ] 首次测试先关闭 Automatic sync；
-- [ ] 检查排除列表是否符合需要；
+- [ ] 检查排除列表；
 - [ ] 点击 **Sync now**。
 
-## H. 首次上线顺序
+## I. 首次上线顺序
 
 ### 服务端为空
 
 1. 只启用设备 A；
 2. 在专用测试 Vault 点击 Sync now；
-3. 检查提示中的上传数和冲突数；
+3. 检查上传数和冲突数；
 4. 在设备 B 创建空测试 Vault，安装插件并使用同一 Vault ID；
 5. B 点击 Sync now；
-6. 逐字节比较几个 Markdown、图片和 `.obsidian` 文件；
-7. 按开发方案中的人工验收矩阵测试修改、删除、离线冲突和 Tunnel 断线；
+6. 比较 Markdown、图片和 `.obsidian` 文件的内容；
+7. 测试修改、删除、离线冲突、容器重启和 Tunnel 断线；
 8. 全部通过后才打开 Automatic sync。
 
 ### 第二台设备已有内容
 
-先完整备份。首次同步会把双方不同的同路径文件判定为冲突，并生成冲突副本；文件很多时可能出现大量副本。最稳妥的方式是让第二台设备从空 Vault 拉取，再人工迁移只存在于旧 Vault 的内容。
+先完整备份。首次同步会把双方不同的同路径文件判定为冲突，并生成冲突副本；最稳妥的方法是让第二台设备从空 Vault 拉取，再人工迁移只存在于旧 Vault 的内容。
 
-## I. 日常运维
+## J. Docker 日常运维
 
-- [ ] Windows 主机保持开机、联网，并避免长期睡眠；
-- [ ] 定期执行 `.\scripts\backup-server.ps1`，把备份复制到另一块磁盘；
+启动或升级并重建镜像：
+
+```powershell
+.\scripts\docker-up.ps1
+```
+
+只启动已有镜像：
+
+```powershell
+.\scripts\docker-up.ps1 -NoBuild
+```
+
+查看日志：
+
+```powershell
+.\scripts\docker-logs.ps1 -Follow
+```
+
+一致性备份：
+
+```powershell
+.\scripts\docker-backup.ps1 -DestinationDirectory 'E:\Backups\ObsidianSync'
+```
+
+脚本会优雅停止容器、复制已经 checkpoint 的 SQLite、计算 SHA-256，再恢复原运行状态。备份不包含 API Token，但包含明文 Vault 内容，必须放在加密介质。
+
+停止并删除容器及 Compose 网络，但保留数据：
+
+```powershell
+.\scripts\docker-down.ps1
+```
+
+日常检查：
+
+- [ ] Windows 主机和 Docker Desktop保持运行；
+- [ ] 定期检查 `docker compose ps` 和 `Get-Service cloudflared`；
+- [ ] 定期运行 Docker 备份并复制到另一台设备；
 - [ ] 继续保留 Vault 自身的独立版本化备份；
-- [ ] 定期检查 `Get-Service ObsidianSyncTunnel, cloudflared`；
-- [ ] 定期更新 `cloudflared`；Windows 安装不会自动更新；
-- [ ] 插件或服务升级前做服务数据备份；
-- [ ] 不要在同一 Vault 上同时启用另一套会写入相同文件的双向同步服务；
-- [ ] Token 泄露时，重新生成同步 Token、更新服务端 token 文件并在所有设备更新 SecretStorage；
-- [ ] Tunnel Token 泄露时在 Cloudflare 撤销并重新安装连接器；
-- [ ] Access Token 泄露时在 Zero Trust 撤销并替换 Service Token。
+- [ ] 定期更新 `cloudflared`；
+- [ ] 不要在同一 Vault 上同时启用另一套双向同步服务。
 
-查看服务日志：
+## K. 卸载和数据删除
 
 ```powershell
-Get-Content C:\ProgramData\ObsidianSyncTunnel\logs\server.jsonl -Tail 100
+.\scripts\docker-down.ps1
 ```
 
-开发环境前台运行时，结构化日志直接输出到终端。
+这不会删除 bind-mounted SQLite 和 Token。只有在验证备份、确认永久放弃服务后，才手工删除 `.env` 所指向的 Windows 数据目录和 Token 文件。不要使用 `docker compose down -v` 代替数据管理；本方案的数据本来就不在匿名卷中。
 
-## J. 卸载与恢复
-
-卸载服务但保留数据：
-
-```powershell
-.\scripts\uninstall-server.ps1
-```
-
-删除 `C:\ProgramData\ObsidianSyncTunnel` 会永久删除服务端数据库和 Token，必须在确认备份后手工执行；卸载脚本默认不会删除它。
-
-恢复时先停止服务，用备份替换数据目录，再启动服务。恢复旧数据库后，各客户端可能拥有更大的游标；首版应在插件停用状态下备份各设备，并清除本插件 `data.json` 让设备从游标 0 重新核对。正式恢复脚本和设备水位协调属于阶段 B。
+原生 Windows EXE 服务脚本仍保留作为备选迁移路径，但 Docker 是当前推荐部署方式，不要同时运行两套服务占用相同端口或数据库。

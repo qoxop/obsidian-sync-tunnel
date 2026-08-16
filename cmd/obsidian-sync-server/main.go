@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,7 +35,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: obsidian-sync-server <serve|token|version>")
+		return errors.New("usage: obsidian-sync-server <serve|token|healthcheck|version>")
 	}
 	switch args[0] {
 	case "serve":
@@ -44,9 +45,39 @@ func run(args []string) error {
 	case "version":
 		fmt.Println(version)
 		return nil
+	case "healthcheck":
+		return healthcheck(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func healthcheck(args []string) error {
+	fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
+	url := fs.String("url", "http://127.0.0.1:8787/healthz", "health endpoint URL")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: *timeout}
+	response, err := client.Get(*url)
+	if err != nil {
+		return fmt.Errorf("health request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("health endpoint returned HTTP %d", response.StatusCode)
+	}
+	var payload struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&payload); err != nil {
+		return fmt.Errorf("decode health response: %w", err)
+	}
+	if payload.Status != "ok" {
+		return fmt.Errorf("unexpected health status %q", payload.Status)
+	}
+	return nil
 }
 
 func generateToken(args []string) error {
@@ -84,6 +115,7 @@ func serve(args []string) error {
 	fs.StringVar(&cfg.TokenFile, "token-file", cfg.TokenFile, "file containing the bearer token")
 	fs.StringVar(&cfg.LogPath, "log", cfg.LogPath, "optional append-only JSON log path")
 	fs.Int64Var(&cfg.MaxUploadBytes, "max-upload-bytes", cfg.MaxUploadBytes, "maximum bytes per file")
+	fs.BoolVar(&cfg.AllowNonLoopback, "allow-non-loopback", cfg.AllowNonLoopback, "allow binding beyond loopback (for an isolated container network)")
 	windowsService := fs.Bool("windows-service", false, "run under the Windows Service Control Manager")
 	if err := fs.Parse(args); err != nil {
 		return err

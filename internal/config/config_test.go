@@ -18,4 +18,10 @@ func TestValidateRequiresLoopback(t *testing.T) {
 			t.Errorf("expected %s to be rejected", address)
 		}
 	}
+	cfg := Default()
+	cfg.Listen = "0.0.0.0:8787"
+	cfg.AllowNonLoopback = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("container listener should be valid with explicit opt-in: %v", err)
+	}
 }

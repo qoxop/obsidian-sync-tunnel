@@ -3,5 +3,6 @@
   "database_path": "data/sync.db",
   "token_file": "token.txt",
   "log_path": "logs/server.jsonl",
-  "max_upload_bytes": 67108864
+  "max_upload_bytes": 67108864,
+  "allow_non_loopback": false
 }

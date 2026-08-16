@@ -8,7 +8,8 @@
 
 - 同步 Vault 内全部普通文件类型，不区分 Markdown、图片、音视频、PDF 或其他二进制文件；
 - 同步 `.obsidian` 下的主题、CSS、其他插件及插件配置；
-- Go 服务运行在 Windows 本机，监听回环地址；
+- Go 服务运行在 Windows Docker Desktop 的 Linux 容器中，SQLite 通过 bind mount 持久化到 Windows 宿主机；
+- 容器端口只映射到 Windows 回环地址；
 - SQLite 保存文件内容、当前状态和只增变更日志；
 - Cloudflare Tunnel 只建立由本机向外的连接，不开放家庭路由器端口；
 - Obsidian 插件支持桌面端和移动端；
@@ -31,11 +32,12 @@ flowchart LR
     A["设备 A / Obsidian 插件"] -->|"HTTPS + Bearer Token\n可选 Access Service Token"| C["Cloudflare 边缘"]
     B["设备 B / Obsidian 插件"] -->|"HTTPS"| C
     C -->|"出站 Tunnel"| D["Windows cloudflared 服务"]
-    D -->|"HTTP 127.0.0.1:8787"| E["Go 同步服务"]
-    E --> F["SQLite WAL\nblobs + files + changes"]
+    D -->|"HTTP 127.0.0.1:8787"| E["Docker Desktop 端口映射"]
+    E --> F["Go 同步容器 :8787"]
+    F -->|"bind mount /data"| G["Windows 宿主机\nSQLite WAL + JSON logs"]
 ```
 
-Windows 上的 Go 服务只绑定 `127.0.0.1:8787`。`cloudflared` 主动连接 Cloudflare，并把一个 HTTPS 主机名转发到本机服务。客户端仍必须通过同步服务自己的 256 位 Bearer Token；建议再叠加 Cloudflare Access Service Token。
+Go 服务在容器网络内监听 `0.0.0.0:8787`，但 Compose 使用 `host_ip: 127.0.0.1`，只把端口发布到 Windows 回环地址。`cloudflared` 主动连接 Cloudflare，并把 HTTPS 主机名转发到该本机端口。客户端仍必须通过同步服务自己的 256 位 Bearer Token；建议再叠加 Cloudflare Access Service Token。
 
 ## 3. 仓库结构
 
@@ -45,10 +47,14 @@ internal/config/             服务配置和密钥读取
 internal/store/              SQLite 模型、事务和并发控制
 internal/httpapi/            REST API、鉴权、请求限制
 plugin/                      Obsidian TypeScript 插件
-scripts/                     Windows 构建、安装、备份、Tunnel 脚本
+Dockerfile                   非 root、distroless 多阶段服务镜像
+compose.yml                  回环端口、bind mount、secret 和健康检查
+scripts/                     Docker、Windows 构建、备份、Tunnel 脚本
 configs/                     可复制的配置样例
 docs/                        架构、协议和操作手册
 dist/                        本机构建产物，不提交 Git
+runtime-data/                默认宿主机持久化目录，不提交 Git
+secrets/                     默认宿主机 Token 目录，不提交 Git
 ```
 
 ## 4. 同步模型
@@ -170,7 +176,7 @@ Cloudflare Access 启用后，插件额外发送 `CF-Access-Client-Id` 与 `CF-A
 
 ## 7. 安全设计
 
-- 服务只允许监听 localhost/回环 IP；配置校验会拒绝 `0.0.0.0` 和局域网地址，禁止公网绕过 Tunnel 直达源站；
+- 非容器运行只允许监听 localhost/回环 IP；容器必须显式启用 `allow_non_loopback`，同时 Compose 强制把宿主机发布地址固定为 `127.0.0.1`；
 - Token 由加密随机数生成器生成，最少 32 字节；
 - Token 从 ACL 受限文件或 `OBSIDIAN_SYNC_TOKEN` 环境变量读取，不进入 Git；
 - 服务端只保存 Token 的进程内 SHA-256，并用常量时间比较；
@@ -179,22 +185,34 @@ Cloudflare Access 启用后，插件额外发送 `CF-Access-Client-Id` 与 `CF-A
 - 上传大小由服务配置限制；
 - Cloudflare 主机名使用 HTTPS；
 - 日志不记录 Authorization、Access Secret 或文件内容；
-- SQLite 是明文数据，应依靠 Windows 磁盘加密和目录 ACL；
+- SQLite 是明文数据，应依靠 Windows 磁盘加密、bind mount 目录 ACL 和独立备份；
+- 容器使用非 root 用户、只读根文件系统、capability drop、`no-new-privileges` 和 distroless 镜像；
+- API Token 以只读 Compose secret 文件挂载，不写入镜像、Compose 环境变量或 Git；
 - Tunnel Token、同步 Token、Access Service Token 必须分别管理和轮换。
 
-## 8. Windows 运行方式
+## 8. Docker Desktop 运行方式
 
-构建产物 `obsidian-sync-server.exe` 安装为自动启动的 Windows 服务，运行账户为 LocalSystem，配置与数据默认放在：
+`scripts/docker-init.ps1` 创建 `.env`、宿主机数据目录和 Token 文件。Compose 将 Windows 数据目录映射为容器 `/data`，将 Token 文件以只读 secret 映射为 `/run/secrets/sync_api_token`。
+
+默认结构：
 
 ```text
-C:\ProgramData\ObsidianSyncTunnel\
-  config.json
-  token.txt
-  data\sync.db
-  bin\obsidian-sync-server.exe
+<repository>\
+  .env
+  runtime-data\
+    sync.db
+    sync.db-wal
+    sync.db-shm
+    server.jsonl
+  secrets\
+    api-token.txt
 ```
 
-Cloudflare Tunnel 是独立的 `cloudflared` Windows 服务。Go 服务重启不需要重建 Tunnel；Tunnel 配置改变时重启 `cloudflared`。
+默认路径可以改为其他 Windows 磁盘。删除或重建容器不会删除 bind-mounted 数据。容器采用 `restart: unless-stopped`，Docker Desktop 启动后会恢复服务。
+
+Cloudflare Tunnel 仍是独立的 `cloudflared` Windows 服务，Origin 为 `http://127.0.0.1:${OBSIDIAN_SYNC_PORT}`。Go 容器重建不需要重建 Tunnel；只有宿主机映射端口改变时才需要修改 Cloudflare Origin。
+
+原生 Windows EXE 服务脚本保留为备选迁移路径，但不应与 Docker 部署同时运行或指向同一 SQLite。
 
 ## 9. 测试方案与验收标准
 
@@ -205,6 +223,7 @@ Cloudflare Tunnel 是独立的 `cloudflared` Windows 服务。Go 服务重启不
 - Go：`go test ./...`、`go vet ./...`；
 - 插件：TypeScript 严格类型检查和生产 bundle；
 - 脚本：本地启动服务后执行 API 冒烟测试；
+- Docker：镜像构建、容器健康、回环端口发布、bind mount 持久化、容器重建后数据保留；
 - Git：敏感文件和构建产物被 `.gitignore` 排除。
 
 ### 人工验收矩阵
@@ -234,6 +253,7 @@ Cloudflare Tunnel 是独立的 `cloudflared` Windows 服务。Go 服务重启不
 - [x] 完成 Windows 构建、服务安装、备份、Tunnel 脚本；
 - [x] 完成本地端到端冒烟测试；
 - [x] 创建 Git 首次提交。
+- [x] 增加并验证 Docker Desktop 部署、宿主机 bind mount、容器重建持久化和 Compose 运维脚本；
 
 ### 阶段 B：真实 Vault 前的加固
 
@@ -243,7 +263,7 @@ Cloudflare Tunnel 是独立的 `cloudflared` Windows 服务。Go 服务重启不
 - 文件扫描缓存和有限并发哈希，提高大型 Vault 性能；
 - 服务端速率限制、指标与结构化审计事件；
 - 网络故障、进程崩溃和磁盘写满的故障注入测试；
-- Windows 服务升级/回滚脚本。
+- Docker 镜像签名、SBOM 和自动化版本回滚；
 
 ### 阶段 C：产品化
 
@@ -264,6 +284,8 @@ Cloudflare Tunnel 是独立的 `cloudflared` Windows 服务。Go 服务重启不
 | `.obsidian` 更新需重启生效 | 保留文件并在指引中提示 | 检测后提示重载 |
 | 多设备插件配置相互影响 | 本插件状态强制本地化 | 按设备配置层 |
 | Windows 主机休眠/断电 | 客户端可重试，不静默覆盖 | UPS/常开主机、健康监控 |
+| Docker Desktop 未启动 | `restart: unless-stopped`，客户端保留本地变更 | Windows 登录自启与外部健康监控 |
+| Windows bind mount 性能低于 Docker volume | 可直接定位和备份，运维透明 | 大型 Vault 压测后评估 WSL/volume 方案 |
 
 ## 12. 决策记录
 
@@ -272,3 +294,5 @@ Cloudflare Tunnel 是独立的 `cloudflared` Windows 服务。Go 服务重启不
 - 选择服务端权威 revision：避免依赖不同设备不可靠的系统时间；
 - 保留文件 `modified_at` 仅用于落盘元数据，不用它决定冲突胜负；
 - 首版不自动 GC：宁可多占磁盘，也不在缺少恢复工具时删历史内容。
+- 选择 Windows bind mount 而非 Docker named volume：优先满足数据位置明确、可直接备份和容器重建后独立存续；
+- `cloudflared` 继续作为 Windows 服务：让 Tunnel 生命周期与 Go 应用镜像解耦，并直接使用回环映射端口。
