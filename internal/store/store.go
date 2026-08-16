@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,8 +18,9 @@ import (
 )
 
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+var operationIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
-const CurrentSchemaVersion = 1
+const CurrentSchemaVersion = 2
 
 var migrations = [][]string{
 	{
@@ -57,6 +59,19 @@ var migrations = [][]string{
 		`CREATE INDEX IF NOT EXISTS changes_vault_blob ON changes(vault_id, blob_hash)`,
 		`CREATE INDEX IF NOT EXISTS changes_vault_path_seq ON changes(vault_id, path, seq DESC)`,
 	},
+	{
+		`CREATE TABLE IF NOT EXISTS operations (
+			vault_id TEXT NOT NULL,
+			device_id TEXT NOT NULL,
+			operation_id TEXT NOT NULL,
+			fingerprint TEXT NOT NULL,
+			change_json TEXT NOT NULL,
+			changed INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (vault_id, device_id, operation_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS operations_created_at ON operations(created_at)`,
+	},
 }
 
 type Store struct {
@@ -75,6 +90,14 @@ type Change struct {
 
 type ConflictError struct {
 	Current Change
+}
+
+type OperationReuseError struct {
+	OperationID string
+}
+
+func (e *OperationReuseError) Error() string {
+	return fmt.Sprintf("operation ID %s was reused with different mutation metadata", e.OperationID)
 }
 
 func (e *ConflictError) Error() string {
@@ -182,23 +205,34 @@ func Hash(data []byte) string {
 }
 
 func (s *Store) Put(ctx context.Context, vaultID, filePath, deviceID string, baseRevision, modifiedAt int64, expectedHash string, data []byte) (Change, bool, error) {
+	return s.PutWithOperation(ctx, vaultID, filePath, deviceID, "", baseRevision, modifiedAt, expectedHash, data)
+}
+
+func (s *Store) PutWithOperation(ctx context.Context, vaultID, filePath, deviceID, operationID string, baseRevision, modifiedAt int64, expectedHash string, data []byte) (Change, bool, error) {
 	actualHash := Hash(data)
 	if actualHash != strings.ToLower(expectedHash) {
 		return Change{}, false, errors.New("content SHA-256 does not match header")
 	}
-	return s.apply(ctx, vaultID, filePath, deviceID, baseRevision, modifiedAt, actualHash, data, false)
+	return s.apply(ctx, vaultID, filePath, deviceID, operationID, baseRevision, modifiedAt, actualHash, data, false)
 }
 
 func (s *Store) Delete(ctx context.Context, vaultID, filePath, deviceID string, baseRevision, modifiedAt int64) (Change, bool, error) {
-	return s.apply(ctx, vaultID, filePath, deviceID, baseRevision, modifiedAt, "", nil, true)
+	return s.DeleteWithOperation(ctx, vaultID, filePath, deviceID, "", baseRevision, modifiedAt)
 }
 
-func (s *Store) apply(ctx context.Context, vaultID, filePath, deviceID string, baseRevision, modifiedAt int64, hash string, data []byte, deleted bool) (Change, bool, error) {
+func (s *Store) DeleteWithOperation(ctx context.Context, vaultID, filePath, deviceID, operationID string, baseRevision, modifiedAt int64) (Change, bool, error) {
+	return s.apply(ctx, vaultID, filePath, deviceID, operationID, baseRevision, modifiedAt, "", nil, true)
+}
+
+func (s *Store) apply(ctx context.Context, vaultID, filePath, deviceID, operationID string, baseRevision, modifiedAt int64, hash string, data []byte, deleted bool) (Change, bool, error) {
 	if err := ValidateID("vault ID", vaultID); err != nil {
 		return Change{}, false, err
 	}
 	if err := ValidateID("device ID", deviceID); err != nil {
 		return Change{}, false, err
+	}
+	if operationID != "" && !operationIDPattern.MatchString(operationID) {
+		return Change{}, false, errors.New("invalid operation ID")
 	}
 	var err error
 	filePath, err = NormalizePath(filePath)
@@ -211,12 +245,25 @@ func (s *Store) apply(ctx context.Context, vaultID, filePath, deviceID string, b
 	if modifiedAt <= 0 {
 		modifiedAt = time.Now().UnixMilli()
 	}
+	fingerprint := mutationFingerprint(filePath, baseRevision, modifiedAt, hash, deleted)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Change{}, false, err
 	}
 	defer tx.Rollback()
+	if operationID != "" {
+		result, changed, storedFingerprint, found, err := operationResult(ctx, tx, vaultID, deviceID, operationID)
+		if err != nil {
+			return Change{}, false, err
+		}
+		if found {
+			if storedFingerprint != fingerprint {
+				return Change{}, false, &OperationReuseError{OperationID: operationID}
+			}
+			return result, changed, nil
+		}
+	}
 
 	current, found, err := currentFile(ctx, tx, vaultID, filePath)
 	if err != nil {
@@ -224,7 +271,7 @@ func (s *Store) apply(ctx context.Context, vaultID, filePath, deviceID string, b
 	}
 	if found && current.Revision != baseRevision {
 		if (deleted && current.Deleted) || (!deleted && !current.Deleted && current.BlobHash == hash) {
-			return current, false, tx.Commit()
+			return commitMutationResult(ctx, tx, vaultID, deviceID, operationID, fingerprint, current, false)
 		}
 		return Change{}, false, &ConflictError{Current: current}
 	}
@@ -232,10 +279,10 @@ func (s *Store) apply(ctx context.Context, vaultID, filePath, deviceID string, b
 		return Change{}, false, &ConflictError{Current: Change{Path: filePath, Deleted: true}}
 	}
 	if !found && deleted {
-		return Change{Path: filePath, Deleted: true, DeviceID: deviceID}, false, tx.Commit()
+		return commitMutationResult(ctx, tx, vaultID, deviceID, operationID, fingerprint, Change{Path: filePath, Deleted: true, DeviceID: deviceID}, false)
 	}
 	if found && current.Revision == baseRevision && current.Deleted == deleted && (deleted || current.BlobHash == hash) {
-		return current, false, tx.Commit()
+		return commitMutationResult(ctx, tx, vaultID, deviceID, operationID, fingerprint, current, false)
 	}
 
 	now := time.Now().UnixMilli()
@@ -266,10 +313,48 @@ func (s *Store) apply(ctx context.Context, vaultID, filePath, deviceID string, b
 	); err != nil {
 		return Change{}, false, fmt.Errorf("update file: %w", err)
 	}
+	change := Change{Revision: revision, Path: filePath, BlobHash: hash, Size: int64(len(data)), ModifiedAt: modifiedAt, Deleted: deleted, DeviceID: deviceID}
+	return commitMutationResult(ctx, tx, vaultID, deviceID, operationID, fingerprint, change, true)
+}
+
+func operationResult(ctx context.Context, tx *sql.Tx, vaultID, deviceID, operationID string) (Change, bool, string, bool, error) {
+	var fingerprint, encoded string
+	var changed bool
+	err := tx.QueryRowContext(ctx, `SELECT fingerprint, change_json, changed FROM operations WHERE vault_id=? AND device_id=? AND operation_id=?`, vaultID, deviceID, operationID).
+		Scan(&fingerprint, &encoded, &changed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Change{}, false, "", false, nil
+	}
+	if err != nil {
+		return Change{}, false, "", false, err
+	}
+	var change Change
+	if err := json.Unmarshal([]byte(encoded), &change); err != nil {
+		return Change{}, false, "", false, fmt.Errorf("decode operation result: %w", err)
+	}
+	return change, changed, fingerprint, true, nil
+}
+
+func commitMutationResult(ctx context.Context, tx *sql.Tx, vaultID, deviceID, operationID, fingerprint string, change Change, changed bool) (Change, bool, error) {
+	if operationID != "" {
+		encoded, err := json.Marshal(change)
+		if err != nil {
+			return Change{}, false, fmt.Errorf("encode operation result: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO operations(vault_id, device_id, operation_id, fingerprint, change_json, changed, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			vaultID, deviceID, operationID, fingerprint, string(encoded), changed, time.Now().UnixMilli()); err != nil {
+			return Change{}, false, fmt.Errorf("record operation result: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return Change{}, false, err
 	}
-	return Change{Revision: revision, Path: filePath, BlobHash: hash, Size: int64(len(data)), ModifiedAt: modifiedAt, Deleted: deleted, DeviceID: deviceID}, true, nil
+	return change, changed, nil
+}
+
+func mutationFingerprint(filePath string, baseRevision, modifiedAt int64, hash string, deleted bool) string {
+	value := fmt.Sprintf("%s\n%d\n%d\n%s\n%t", filePath, baseRevision, modifiedAt, hash, deleted)
+	return Hash([]byte(value))
 }
 
 func currentFile(ctx context.Context, q interface {

@@ -86,6 +86,35 @@ func TestListChangesPagination(t *testing.T) {
 	}
 }
 
+func TestOperationIDReturnsOriginalCommittedResult(t *testing.T) {
+	t.Parallel()
+	db := openTestStore(t)
+	ctx := context.Background()
+	firstOperation := "11111111-1111-4111-8111-111111111111"
+	secondOperation := "22222222-2222-4222-8222-222222222222"
+	firstData := []byte("first")
+	first, changed, err := db.PutWithOperation(ctx, "vault-a", "note.md", "desktop", firstOperation, 0, 1000, Hash(firstData), firstData)
+	if err != nil || !changed {
+		t.Fatalf("first operation: change=%+v changed=%v err=%v", first, changed, err)
+	}
+	secondData := []byte("second")
+	second, changed, err := db.PutWithOperation(ctx, "vault-a", "note.md", "desktop", secondOperation, first.Revision, 2000, Hash(secondData), secondData)
+	if err != nil || !changed || second.Revision <= first.Revision {
+		t.Fatalf("second operation: change=%+v changed=%v err=%v", second, changed, err)
+	}
+
+	retried, changed, err := db.PutWithOperation(ctx, "vault-a", "note.md", "desktop", firstOperation, 0, 1000, Hash(firstData), firstData)
+	if err != nil || !changed || retried.Revision != first.Revision {
+		t.Fatalf("operation retry: change=%+v changed=%v err=%v", retried, changed, err)
+	}
+
+	_, _, err = db.PutWithOperation(ctx, "vault-a", "note.md", "desktop", firstOperation, 0, 1001, Hash(firstData), firstData)
+	var reused *OperationReuseError
+	if !errors.As(err, &reused) {
+		t.Fatalf("expected operation reuse error, got %v", err)
+	}
+}
+
 func TestListSnapshotIsStableAtRevision(t *testing.T) {
 	t.Parallel()
 	db := openTestStore(t)
@@ -139,6 +168,39 @@ func TestSchemaVersion(t *testing.T) {
 	version, err := db.SchemaVersion(context.Background())
 	if err != nil || version != CurrentSchemaVersion {
 		t.Fatalf("schema version=%d err=%v", version, err)
+	}
+}
+
+func TestSchemaMigrationFromVersionOneAddsOperations(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "sync.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range migrations[0] {
+		if _, err := raw.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var table string
+	if err := db.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='operations'`).Scan(&table); err != nil {
+		t.Fatal(err)
+	}
+	if table != "operations" {
+		t.Fatalf("unexpected table %q", table)
 	}
 }
 

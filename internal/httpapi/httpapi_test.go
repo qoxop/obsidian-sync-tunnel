@@ -102,6 +102,57 @@ func TestUploadValidationAndLimit(t *testing.T) {
 	}
 }
 
+func TestOperationIDRetryReturnsOriginalRevision(t *testing.T) {
+	t.Parallel()
+	handler := testHandler(t, 1024)
+	path := "note.md"
+	firstData := []byte("first")
+	firstRequest := fileRequest(http.MethodPut, path, 0, firstData)
+	firstRequest.Header.Set("X-Content-SHA256", store.Hash(firstData))
+	firstRequest.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
+	firstResponse := httptest.NewRecorder()
+	handler.ServeHTTP(firstResponse, firstRequest)
+	if firstResponse.Code != http.StatusOK {
+		t.Fatalf("first operation status=%d body=%s", firstResponse.Code, firstResponse.Body)
+	}
+	var first mutationPayload
+	decodeJSON(t, firstResponse.Body.Bytes(), &first)
+
+	secondData := []byte("second")
+	secondRequest := fileRequest(http.MethodPut, path, first.Change.Revision, secondData)
+	secondRequest.Header.Set("X-Content-SHA256", store.Hash(secondData))
+	secondRequest.Header.Set("X-Operation-ID", "22222222-2222-4222-8222-222222222222")
+	secondResponse := httptest.NewRecorder()
+	handler.ServeHTTP(secondResponse, secondRequest)
+	if secondResponse.Code != http.StatusOK {
+		t.Fatalf("second operation status=%d body=%s", secondResponse.Code, secondResponse.Body)
+	}
+
+	retryRequest := fileRequest(http.MethodPut, path, 0, firstData)
+	retryRequest.Header.Set("X-Content-SHA256", store.Hash(firstData))
+	retryRequest.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
+	retryResponse := httptest.NewRecorder()
+	handler.ServeHTTP(retryResponse, retryRequest)
+	if retryResponse.Code != http.StatusOK {
+		t.Fatalf("retry status=%d body=%s", retryResponse.Code, retryResponse.Body)
+	}
+	var retried mutationPayload
+	decodeJSON(t, retryResponse.Body.Bytes(), &retried)
+	if retried.Change.Revision != first.Change.Revision || !retried.Changed {
+		t.Fatalf("retry did not return original result: first=%+v retried=%+v", first, retried)
+	}
+
+	reusedRequest := fileRequest(http.MethodPut, path, 0, firstData)
+	reusedRequest.Header.Set("X-Content-SHA256", store.Hash(firstData))
+	reusedRequest.Header.Set("X-Modified-At", "9999")
+	reusedRequest.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
+	reusedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(reusedResponse, reusedRequest)
+	if reusedResponse.Code != http.StatusBadRequest || !bytes.Contains(reusedResponse.Body.Bytes(), []byte("operation_id_reused")) {
+		t.Fatalf("reuse status=%d body=%s", reusedResponse.Code, reusedResponse.Body)
+	}
+}
+
 func TestServerInfoAndStableSnapshot(t *testing.T) {
 	t.Parallel()
 	handler := testHandler(t, 1024)

@@ -8,11 +8,13 @@ All notable changes to Sync Tunnel are documented here. The project follows Sema
 
 - Persistent, deduplicated Vault file-event queue with a two-second automatic-sync debounce.
 - Client scan cache keyed by path, size, and modification time, plus hourly metadata scans and daily integrity rehashing.
+- Transactional operation-ID records for retrying whole-file uploads and deletions without allocating duplicate revisions.
 
 ### Changed
 
 - Ordinary unchanged synchronization reuses cached hashes instead of reading every file body.
 - Incremental deletion propagation is limited to paths observed by the event queue; periodic full scans remain the safety net.
+- Whole-file clients attach a UUID operation ID; servers remain compatible with clients that omit it.
 
 ## 0.2.0 - 2026-08-16
 

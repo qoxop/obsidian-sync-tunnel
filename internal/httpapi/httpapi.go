@@ -52,7 +52,7 @@ func (a *API) serverInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"server_version": a.version,
 		"protocol":       map[string]int{"min": 1, "max": 2},
-		"capabilities":   []string{"snapshot-v1", "whole-file-v1"},
+		"capabilities":   []string{"snapshot-v1", "operation-id", "whole-file-v1"},
 		"database":       map[string]int{"schema_version": schemaVersion},
 		"limits": map[string]any{
 			"max_upload_bytes": a.maxUploadBytes,
@@ -163,7 +163,7 @@ func (a *API) putFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "read_failed", "could not read request body")
 		return
 	}
-	change, changed, err := a.store.Put(r.Context(), r.PathValue("vault"), r.URL.Query().Get("path"), metadata.deviceID, metadata.baseRevision, metadata.modifiedAt, r.Header.Get("X-Content-SHA256"), data)
+	change, changed, err := a.store.PutWithOperation(r.Context(), r.PathValue("vault"), r.URL.Query().Get("path"), metadata.deviceID, metadata.operationID, metadata.baseRevision, metadata.modifiedAt, r.Header.Get("X-Content-SHA256"), data)
 	writeMutationResult(w, change, changed, err)
 }
 
@@ -172,12 +172,13 @@ func (a *API) deleteFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	change, changed, err := a.store.Delete(r.Context(), r.PathValue("vault"), r.URL.Query().Get("path"), metadata.deviceID, metadata.baseRevision, metadata.modifiedAt)
+	change, changed, err := a.store.DeleteWithOperation(r.Context(), r.PathValue("vault"), r.URL.Query().Get("path"), metadata.deviceID, metadata.operationID, metadata.baseRevision, metadata.modifiedAt)
 	writeMutationResult(w, change, changed, err)
 }
 
 type mutationMetadata struct {
 	deviceID     string
+	operationID  string
 	baseRevision int64
 	modifiedAt   int64
 }
@@ -202,7 +203,7 @@ func parseMutationMetadata(w http.ResponseWriter, r *http.Request) (mutationMeta
 		}
 		modifiedAt = parsed
 	}
-	return mutationMetadata{deviceID: deviceID, baseRevision: baseRevision, modifiedAt: modifiedAt}, true
+	return mutationMetadata{deviceID: deviceID, operationID: r.Header.Get("X-Operation-ID"), baseRevision: baseRevision, modifiedAt: modifiedAt}, true
 }
 
 func writeMutationResult(w http.ResponseWriter, change store.Change, changed bool, err error) {
@@ -212,6 +213,11 @@ func writeMutationResult(w http.ResponseWriter, change store.Change, changed boo
 			"error":   map[string]string{"code": "revision_conflict", "message": conflict.Error()},
 			"current": conflict.Current,
 		})
+		return
+	}
+	var reused *store.OperationReuseError
+	if errors.As(err, &reused) {
+		writeError(w, http.StatusBadRequest, "operation_id_reused", reused.Error())
 		return
 	}
 	if err != nil {

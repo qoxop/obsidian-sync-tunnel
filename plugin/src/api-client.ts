@@ -66,21 +66,21 @@ export class SyncApiClient {
     });
   }
 
-  async putFile(path: string, baseRevision: number, modifiedAt: number, hash: string, data: ArrayBuffer): Promise<MutationResponse> {
+  async putFile(path: string, baseRevision: number, modifiedAt: number, hash: string, data: ArrayBuffer, operationId = crypto.randomUUID()): Promise<MutationResponse> {
     return this.jsonRequest<MutationResponse>({
       url: `${this.vaultUrl()}/file?path=${encodeURIComponent(path)}`,
       method: "PUT",
       contentType: "application/octet-stream",
-      headers: this.mutationHeaders(baseRevision, modifiedAt, { "X-Content-SHA256": hash }),
+      headers: this.mutationHeaders(operationId, baseRevision, modifiedAt, { "X-Content-SHA256": hash }),
       body: data
     });
   }
 
-  async deleteFile(path: string, baseRevision: number, modifiedAt: number): Promise<MutationResponse> {
+  async deleteFile(path: string, baseRevision: number, modifiedAt: number, operationId = crypto.randomUUID()): Promise<MutationResponse> {
     return this.jsonRequest<MutationResponse>({
       url: `${this.vaultUrl()}/file?path=${encodeURIComponent(path)}`,
       method: "DELETE",
-      headers: this.mutationHeaders(baseRevision, modifiedAt)
+      headers: this.mutationHeaders(operationId, baseRevision, modifiedAt)
     });
   }
 
@@ -96,9 +96,10 @@ export class SyncApiClient {
     return `${this.baseUrl}/api/v1/vaults/${encodeURIComponent(this.options.vaultId)}`;
   }
 
-  private mutationHeaders(baseRevision: number, modifiedAt: number, extra: Record<string, string> = {}): Record<string, string> {
+  private mutationHeaders(operationId: string, baseRevision: number, modifiedAt: number, extra: Record<string, string> = {}): Record<string, string> {
     return {
       "X-Device-ID": this.options.deviceId,
+      "X-Operation-ID": operationId,
       "X-Base-Revision": String(baseRevision),
       "X-Modified-At": String(modifiedAt),
       ...extra
