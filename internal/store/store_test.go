@@ -183,6 +183,37 @@ func TestOperationIDReturnsOriginalCommittedResult(t *testing.T) {
 	}
 }
 
+func TestRenameIsAtomicAndIdempotent(t *testing.T) {
+	t.Parallel()
+	db := openTestStore(t)
+	ctx := context.Background()
+	data := []byte("rename me")
+	source, _, err := db.Put(ctx, "vault-a", "old.md", "desktop", 0, 1, Hash(data), data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationID := "11111111-1111-4111-8111-111111111111"
+	destination, related, changed, err := db.RenameWithOperation(ctx, "vault-a", "old.md", "folder/new.md", "desktop", operationID, source.Revision, 2)
+	if err != nil || !changed || destination.Path != "folder/new.md" || destination.BlobHash != source.BlobHash {
+		t.Fatalf("rename: destination=%+v related=%+v changed=%v err=%v", destination, related, changed, err)
+	}
+	if len(related) != 1 || related[0].Path != "old.md" || !related[0].Deleted || related[0].Revision >= destination.Revision {
+		t.Fatalf("rename tombstone: %+v", related)
+	}
+	retried, retriedRelated, changed, err := db.RenameWithOperation(ctx, "vault-a", "old.md", "folder/new.md", "desktop", operationID, source.Revision, 2)
+	if err != nil || !changed || retried.Revision != destination.Revision || len(retriedRelated) != 1 || retriedRelated[0].Revision != related[0].Revision {
+		t.Fatalf("rename retry: destination=%+v related=%+v changed=%v err=%v", retried, retriedRelated, changed, err)
+	}
+	changes, _, err := db.ListChanges(ctx, "vault-a", source.Revision, 10)
+	if err != nil || len(changes) != 2 || !changes[0].Deleted || changes[1].Path != "folder/new.md" {
+		t.Fatalf("rename changes: %+v err=%v", changes, err)
+	}
+	stored, storedRelated, storedChanged, found, err := db.GetOperationDetails(ctx, "vault-a", "desktop", operationID)
+	if err != nil || !found || !storedChanged || stored.Revision != destination.Revision || len(storedRelated) != 1 {
+		t.Fatalf("stored rename: change=%+v related=%+v changed=%v found=%v err=%v", stored, storedRelated, storedChanged, found, err)
+	}
+}
+
 func TestListSnapshotIsStableAtRevision(t *testing.T) {
 	t.Parallel()
 	db := openTestStore(t)

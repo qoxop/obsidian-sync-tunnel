@@ -136,6 +136,12 @@ X-Content-SHA256
 
 完整文件 API 在迁移期继续保留，能力协商决定使用哪种传输方式。
 
+### 9.1 原子重命名
+
+0.3 引入能力 `rename-v1`。客户端通过 `POST /api/v2/vaults/{vault}/rename` 提交源路径、目标路径、源路径 `base_revision` 和 `operation_id`。成功响应包含目标 change 和 `related_changes` 中的源路径 tombstone；两者与 operation 结果位于同一事务。
+
+无法可靠证明本地操作是重命名时，客户端不得调用该接口。
+
 ## 10. 错误模型
 
 统一返回：

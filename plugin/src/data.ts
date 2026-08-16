@@ -1,6 +1,6 @@
 import type { InitialSyncMode, PersistedData, PluginSettings, SyncProfile } from "./types";
 
-export const DATA_SCHEMA_VERSION = 6;
+export const DATA_SCHEMA_VERSION = 7;
 
 export function migrateData(raw: unknown, generatedDeviceId = generateDeviceId()): PersistedData {
   const parsed = isRecord(raw) ? raw : {};
@@ -43,7 +43,8 @@ export function migrateData(raw: unknown, generatedDeviceId = generateDeviceId()
     lastFullScanAt: nonNegativeNumber(parsed.lastFullScanAt),
     lastIntegrityScanAt: nonNegativeNumber(parsed.lastIntegrityScanAt),
     outbox: isRecord(parsed.outbox) ? sanitizeOutbox(parsed.outbox) : {},
-    inbox: isRecord(parsed.inbox) ? sanitizeInbox(parsed.inbox) : {}
+    inbox: isRecord(parsed.inbox) ? sanitizeInbox(parsed.inbox) : {},
+    pendingRenames: isRecord(parsed.pendingRenames) ? sanitizePendingRenames(parsed.pendingRenames) : {}
   };
 }
 
@@ -78,7 +79,7 @@ function sanitizeOutbox(value: Record<string, unknown>): PersistedData["outbox"]
   const result: PersistedData["outbox"] = {};
   for (const [operationId, raw] of Object.entries(value)) {
     if (!isRecord(raw) || raw.operationId !== operationId) continue;
-    if (raw.kind !== "put" && raw.kind !== "delete") continue;
+    if (raw.kind !== "put" && raw.kind !== "delete" && raw.kind !== "rename") continue;
     if (typeof raw.path !== "string" || typeof raw.hash !== "string") continue;
     const numbers = [raw.baseRevision, raw.modifiedAt, raw.size, raw.createdAt];
     if (!numbers.every((item) => typeof item === "number" && Number.isFinite(item) && item >= 0)) continue;
@@ -97,6 +98,17 @@ function sanitizeInbox(value: Record<string, unknown>): PersistedData["inbox"] {
     const numbers = [raw.revision, raw.size, raw.modifiedAt, raw.createdAt];
     if (!numbers.every((item) => typeof item === "number" && Number.isFinite(item) && item >= 0)) continue;
     result[downloadId] = raw as unknown as PersistedData["inbox"][string];
+  }
+  return result;
+}
+
+function sanitizePendingRenames(value: Record<string, unknown>): PersistedData["pendingRenames"] {
+  const result: PersistedData["pendingRenames"] = {};
+  for (const [renameId, raw] of Object.entries(value)) {
+    if (!isRecord(raw) || raw.renameId !== renameId) continue;
+    if (typeof raw.from !== "string" || typeof raw.to !== "string") continue;
+    if (typeof raw.queuedAt !== "number" || !Number.isFinite(raw.queuedAt) || raw.queuedAt < 0) continue;
+    result[renameId] = raw as unknown as PersistedData["pendingRenames"][string];
   }
   return result;
 }

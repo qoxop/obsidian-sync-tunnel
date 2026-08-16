@@ -20,7 +20,7 @@ import (
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var operationIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
-const CurrentSchemaVersion = 3
+const CurrentSchemaVersion = 4
 
 var migrations = [][]string{
 	{
@@ -85,6 +85,9 @@ var migrations = [][]string{
 			chunks_json TEXT NOT NULL,
 			created_at INTEGER NOT NULL
 		)`,
+	},
+	{
+		`ALTER TABLE operations ADD COLUMN related_json TEXT NOT NULL DEFAULT '[]'`,
 	},
 }
 
@@ -341,17 +344,39 @@ func operationResult(ctx context.Context, tx *sql.Tx, vaultID, deviceID, operati
 }
 
 func (s *Store) GetOperation(ctx context.Context, vaultID, deviceID, operationID string) (Change, bool, bool, error) {
+	change, _, changed, found, err := s.GetOperationDetails(ctx, vaultID, deviceID, operationID)
+	return change, changed, found, err
+}
+
+func (s *Store) GetOperationDetails(ctx context.Context, vaultID, deviceID, operationID string) (Change, []Change, bool, bool, error) {
 	if err := ValidateID("vault ID", vaultID); err != nil {
-		return Change{}, false, false, err
+		return Change{}, nil, false, false, err
 	}
 	if err := ValidateID("device ID", deviceID); err != nil {
-		return Change{}, false, false, err
+		return Change{}, nil, false, false, err
 	}
 	if !operationIDPattern.MatchString(operationID) {
-		return Change{}, false, false, errors.New("invalid operation ID")
+		return Change{}, nil, false, false, errors.New("invalid operation ID")
 	}
-	change, changed, _, found, err := queryOperationResult(ctx, s.db, vaultID, deviceID, operationID)
-	return change, changed, found, err
+	var fingerprint, encoded, relatedEncoded string
+	var changed bool
+	err := s.db.QueryRowContext(ctx, `SELECT fingerprint, change_json, related_json, changed FROM operations WHERE vault_id=? AND device_id=? AND operation_id=?`, vaultID, deviceID, operationID).
+		Scan(&fingerprint, &encoded, &relatedEncoded, &changed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Change{}, nil, false, false, nil
+	}
+	if err != nil {
+		return Change{}, nil, false, false, err
+	}
+	var change Change
+	var related []Change
+	if err := json.Unmarshal([]byte(encoded), &change); err != nil {
+		return Change{}, nil, false, false, fmt.Errorf("decode operation result: %w", err)
+	}
+	if err := json.Unmarshal([]byte(relatedEncoded), &related); err != nil {
+		return Change{}, nil, false, false, fmt.Errorf("decode related operation results: %w", err)
+	}
+	return change, related, changed, true, nil
 }
 
 func queryOperationResult(ctx context.Context, q interface {

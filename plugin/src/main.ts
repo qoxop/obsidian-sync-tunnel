@@ -33,8 +33,11 @@ export default class SyncTunnelPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("modify", (file) => this.recordVaultChange(file.path, file instanceof TFile)));
     this.registerEvent(this.app.vault.on("delete", (file) => this.recordVaultChange(file.path, file instanceof TFile)));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
-      this.recordVaultChange(oldPath, file instanceof TFile);
-      this.recordVaultChange(file.path, file instanceof TFile);
+      if (file instanceof TFile) this.recordVaultRename(oldPath, file.path);
+      else {
+        this.recordVaultChange(oldPath, false);
+        this.recordVaultChange(file.path, false);
+      }
     }));
 
     this.app.workspace.onLayoutReady(() => {
@@ -212,6 +215,17 @@ export default class SyncTunnelPlugin extends Plugin {
     }, 500);
   }
 
+  private recordVaultRename(oldPath: string, newPath: string): void {
+    const from = normalizeVaultPath(oldPath);
+    const to = normalizeVaultPath(newPath);
+    this.recordVaultChange(from, true);
+    this.recordVaultChange(to, true);
+    if (!from || !to || this.createScanner().isExcluded(from) || this.createScanner().isExcluded(to)) return;
+    const renameId = crypto.randomUUID();
+    this.data.pendingRenames[renameId] = { renameId, from, to, queuedAt: Date.now() };
+    this.scheduleEventStateSave();
+  }
+
   private scheduleEventSync(): void {
     if (this.eventSyncTimerId !== undefined) window.clearTimeout(this.eventSyncTimerId);
     this.eventSyncTimerId = window.setTimeout(() => {
@@ -227,5 +241,5 @@ export default class SyncTunnelPlugin extends Plugin {
 }
 
 function formatSummary(summary: SyncSummary): string {
-  return `上传 ${summary.uploaded}，下载 ${summary.downloaded}，远端删除 ${summary.deletedRemote}，本地删除 ${summary.deletedLocal}，冲突 ${summary.conflicts}`;
+  return `上传 ${summary.uploaded}，下载 ${summary.downloaded}，重命名 ${summary.renamed}，远端删除 ${summary.deletedRemote}，本地删除 ${summary.deletedLocal}，冲突 ${summary.conflicts}`;
 }

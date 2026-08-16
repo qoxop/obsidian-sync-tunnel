@@ -12,6 +12,7 @@ All notable changes to Sync Tunnel are documented here. The project follows Sema
 - Persistent client outbox with post-restart operation-result lookup and safe replay of uncommitted mutations.
 - Persistent download inbox with size and SHA-256 verification, same-directory temporary files, backup-based replacement, and restart recovery.
 - Fixed-size content-addressed Chunk storage, missing-Chunk queries, Manifest commits, and capability-negotiated Chunk upload/download.
+- Transactional high-confidence rename operation with source tombstone, destination change, and post-restart result recovery.
 
 ### Changed
 
@@ -21,6 +22,7 @@ All notable changes to Sync Tunnel are documented here. The project follows Sema
 - A client with pending outbox entries refuses to write through a downgraded server that cannot prove operation results.
 - Sync Tunnel temporary download and backup files are always excluded from Vault synchronization.
 - Chunked Manifest commits keep the whole-file download path compatible during the 0.3 migration window.
+- Rename events fall back to upload plus delete unless the old baseline and new content hash prove identity.
 
 ## 0.2.0 - 2026-08-16
 

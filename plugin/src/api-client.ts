@@ -116,6 +116,16 @@ export class SyncApiClient {
     });
   }
 
+  async renameFile(from: string, to: string, baseRevision: number, modifiedAt: number, operationId: string): Promise<MutationResponse> {
+    return this.jsonRequest<MutationResponse>({
+      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/rename`,
+      method: "POST",
+      contentType: "application/json",
+      headers: this.mutationHeaders(operationId, baseRevision, modifiedAt),
+      body: JSON.stringify({ from, to })
+    });
+  }
+
   async downloadChunk(hash: string): Promise<ArrayBuffer> {
     const response = await this.request({
       url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/chunks/${encodeURIComponent(hash)}`,

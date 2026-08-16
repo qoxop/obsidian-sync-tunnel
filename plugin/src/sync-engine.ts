@@ -14,6 +14,7 @@ export class SyncEngine {
   private supportsOperationIDs = false;
   private supportsChunkUpload = false;
   private supportsChunkDownload = false;
+  private supportsRename = false;
   private chunkSize = 4 * 1024 * 1024;
   private chunkConcurrency = 3;
   private maxChunkQuery = 1000;
@@ -40,7 +41,8 @@ export class SyncEngine {
       deletedLocal: 0,
       conflicts: 0,
       skipped: 0,
-      restartRequired: false
+      restartRequired: false,
+      renamed: 0
     };
     try {
       const initialMode = this.data.initialSyncCompleted ? null : this.data.pendingInitialSyncMode;
@@ -50,6 +52,7 @@ export class SyncEngine {
       this.supportsOperationIDs = serverInfo.capabilities.includes("operation-id");
       this.supportsChunkUpload = this.supportsOperationIDs && serverInfo.capabilities.includes("chunk-upload-v1");
       this.supportsChunkDownload = serverInfo.capabilities.includes("chunk-download-v1");
+      this.supportsRename = this.supportsOperationIDs && serverInfo.capabilities.includes("rename-v1");
       this.chunkSize = positiveInteger(serverInfo.limits?.chunk_size, this.chunkSize);
       this.chunkConcurrency = Math.min(8, positiveInteger(serverInfo.limits?.chunk_concurrency, this.chunkConcurrency));
       this.maxChunkQuery = Math.min(1000, positiveInteger(serverInfo.limits?.max_chunk_query, this.maxChunkQuery));
@@ -62,6 +65,12 @@ export class SyncEngine {
       const filterChanged = this.data.filterFingerprint !== filterFingerprint;
       if (filterChanged || initialMode) {
         await this.reconcileSnapshot(filterFingerprint, summary, initialMode);
+      }
+      if (this.supportsRename) {
+        await this.processPendingRenames(summary);
+      } else if (Object.keys(this.data.pendingRenames).length > 0) {
+        this.data.pendingRenames = {};
+        await this.persist();
       }
       const now = Date.now();
       const pendingPaths = { ...this.data.pendingPaths };
@@ -350,7 +359,8 @@ export class SyncEngine {
     modifiedAt: number,
     hash: string,
     size: number,
-    chunks?: ChunkRef[]
+    chunks?: ChunkRef[],
+    sourcePath?: string
   ): Promise<string | undefined> {
     if (!this.supportsOperationIDs) return undefined;
     const operationId = crypto.randomUUID();
@@ -364,7 +374,8 @@ export class SyncEngine {
       size,
       createdAt: Date.now(),
       transport: chunks ? "chunks" : "whole",
-      chunks
+      chunks,
+      sourcePath
     };
     await this.persist();
     return operationId;
@@ -389,7 +400,15 @@ export class SyncEngine {
     for (const operation of operations) {
       const committed = await this.client.findOperation(operation.operationId);
       if (committed) {
+        if (operation.kind === "rename") {
+          await this.acceptRecoveredRename(operation, committed, summary);
+          continue;
+        }
         await this.acceptRecoveredOperation(operation, committed.change, committed.changed, summary);
+        continue;
+      }
+      if (operation.kind === "rename") {
+        await this.resumeRenameOperation(operation, summary);
         continue;
       }
       if (this.scanner.isExcluded(operation.path)) {
@@ -482,11 +501,121 @@ export class SyncEngine {
   private async abandonUncommittedOperation(operation: OutboxOperation): Promise<void> {
     delete this.data.outbox[operation.operationId];
     this.queuePath(operation.path);
+    if (operation.sourcePath) this.queuePath(operation.sourcePath);
     await this.persist();
   }
 
   private queuePath(path: string): void {
     this.data.pendingPaths[path] = Math.max(Date.now(), (this.data.pendingPaths[path] ?? 0) + 1);
+  }
+
+  private async processPendingRenames(summary: SyncSummary): Promise<void> {
+    const renames = Object.values(this.data.pendingRenames).sort((left, right) => left.queuedAt - right.queuedAt);
+    for (const rename of renames) {
+      const previous = this.data.files[rename.from];
+      const sourceExists = await this.adapter.exists(rename.from);
+      const destinationExists = await this.adapter.exists(rename.to);
+      if (!previous || previous.deleted || sourceExists || !destinationExists) {
+        delete this.data.pendingRenames[rename.renameId];
+        continue;
+      }
+      const content = await this.adapter.readBinary(rename.to);
+      if (await sha256(content) !== previous.hash) {
+        delete this.data.pendingRenames[rename.renameId];
+        continue;
+      }
+      const stat = await this.adapter.stat(rename.to);
+      if (!stat || stat.type !== "file") {
+        delete this.data.pendingRenames[rename.renameId];
+        continue;
+      }
+      const operationId = await this.stageOperation(
+        "rename",
+        rename.to,
+        previous.revision,
+        stat.mtime,
+        previous.hash,
+        content.byteLength,
+        undefined,
+        rename.from
+      );
+      if (!operationId) continue;
+      try {
+        const result = await this.client.renameFile(rename.from, rename.to, previous.revision, stat.mtime, operationId);
+        await this.acceptRenameResult(rename.renameId, operationId, rename.from, rename.to, result, summary);
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.code !== "revision_conflict") throw error;
+        await this.discardOperation(operationId);
+        delete this.data.pendingRenames[rename.renameId];
+      }
+    }
+    await this.persist();
+  }
+
+  private async resumeRenameOperation(operation: OutboxOperation, summary: SyncSummary): Promise<void> {
+    const sourcePath = operation.sourcePath;
+    if (!sourcePath || await this.adapter.exists(sourcePath) || !await this.adapter.exists(operation.path)) {
+      await this.abandonUncommittedOperation(operation);
+      return;
+    }
+    const content = await this.adapter.readBinary(operation.path);
+    if (content.byteLength !== operation.size || await sha256(content) !== operation.hash) {
+      await this.abandonUncommittedOperation(operation);
+      return;
+    }
+    try {
+      const result = await this.client.renameFile(
+        sourcePath,
+        operation.path,
+        operation.baseRevision,
+        operation.modifiedAt,
+        operation.operationId
+      );
+      await this.acceptRecoveredRename(operation, result, summary);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== "revision_conflict") throw error;
+      await this.discardOperation(operation.operationId);
+      this.queuePath(sourcePath);
+      this.queuePath(operation.path);
+      await this.persist();
+    }
+  }
+
+  private async acceptRecoveredRename(operation: OutboxOperation, result: Awaited<ReturnType<SyncApiClient["renameFile"]>>, summary: SyncSummary): Promise<void> {
+    if (!operation.sourcePath) throw new Error("Recovered rename operation has no source path");
+    await this.acceptRenameResult(undefined, operation.operationId, operation.sourcePath, operation.path, result, summary);
+  }
+
+  private async acceptRenameResult(
+    renameId: string | undefined,
+    operationId: string,
+    sourcePath: string,
+    destinationPath: string,
+    result: Awaited<ReturnType<SyncApiClient["renameFile"]>>,
+    summary: SyncSummary
+  ): Promise<void> {
+    const sourceChange = result.related_changes?.find((change) => change.path === sourcePath && change.deleted);
+    if (!sourceChange || result.change.path !== destinationPath) {
+      throw new Error("Server returned an incomplete rename result");
+    }
+    this.data.files[sourcePath] = stateFromChange(sourceChange);
+    this.data.files[destinationPath] = stateFromChange(result.change);
+    delete this.data.scanCache[sourcePath];
+    const stat = await this.adapter.stat(destinationPath);
+    if (stat?.type === "file") {
+      this.data.scanCache[destinationPath] = {
+        hash: result.change.blob_hash ?? "",
+        size: stat.size,
+        modifiedAt: stat.mtime
+      };
+    }
+    delete this.data.pendingPaths[sourcePath];
+    delete this.data.pendingPaths[destinationPath];
+    if (renameId) delete this.data.pendingRenames[renameId];
+    summary.renamed += result.changed ? 1 : 0;
+    if (!result.changed) summary.skipped += 1;
+    await this.completeOperation(operationId);
+    await this.persist();
   }
 
   private async buildChunkRefs(content: ArrayBuffer): Promise<ChunkRef[]> {

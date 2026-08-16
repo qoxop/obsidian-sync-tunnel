@@ -35,7 +35,8 @@ $health = Invoke-RestMethod -Uri "$ServerUrl/healthz"
 if ($health.status -ne "ok") { throw "Health check failed" }
 $serverInfo = Invoke-RestMethod -Uri "$ServerUrl/api/v2/server-info" -Headers @{ Authorization = "Bearer $Token" }
 if ($serverInfo.protocol.max -lt 2 -or $serverInfo.capabilities -notcontains "snapshot-v1" -or
-    $serverInfo.capabilities -notcontains "operation-id" -or $serverInfo.capabilities -notcontains "chunk-upload-v1") {
+    $serverInfo.capabilities -notcontains "operation-id" -or $serverInfo.capabilities -notcontains "chunk-upload-v1" -or
+    $serverInfo.capabilities -notcontains "rename-v1") {
     throw "Server does not advertise the required Protocol v2 capabilities"
 }
 $put = Invoke-RestMethod -Method Put -Uri "$base/file?path=$encodedPath" -Headers $headers -ContentType "application/octet-stream" -Body $data
@@ -78,6 +79,19 @@ $chunkCommit = Invoke-RestMethod -Method Post -Uri "$ServerUrl/api/v2/vaults/$va
 if (-not $chunkCommit.changed) { throw "Chunk Manifest commit did not create a change" }
 $manifest = Invoke-RestMethod -Uri "$ServerUrl/api/v2/vaults/$vaultId/manifests/$sha" -Headers @{ Authorization = "Bearer $Token" }
 if ($manifest.size -ne $data.Length -or @($manifest.chunks).Count -ne 1) { throw "Stored Chunk Manifest is invalid" }
+$renamedPath = "folder/chunk-note-renamed.md"
+$renameHeaders = @{
+    Authorization = "Bearer $Token"
+    "X-Device-ID" = "smoke-device"
+    "X-Operation-ID" = [Guid]::NewGuid().ToString()
+    "X-Base-Revision" = $chunkCommit.change.revision.ToString()
+    "X-Modified-At" = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString()
+}
+$renameBody = @{ from = $chunkPath; to = $renamedPath } | ConvertTo-Json -Compress
+$rename = Invoke-RestMethod -Method Post -Uri "$ServerUrl/api/v2/vaults/$vaultId/rename" -Headers $renameHeaders -ContentType "application/json" -Body $renameBody
+if (-not $rename.changed -or $rename.change.path -ne $renamedPath -or @($rename.related_changes).Count -ne 1 -or -not $rename.related_changes[0].deleted) {
+    throw "Atomic rename did not return destination and source tombstone"
+}
 
 $deleteHeaders = @{
     Authorization = "Bearer $Token"

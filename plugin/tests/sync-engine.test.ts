@@ -86,7 +86,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastFullScanAt: 0,
       lastIntegrityScanAt: 0,
       outbox: {},
-      inbox: {}
+      inbox: {},
+      pendingRenames: {}
     };
     let persistCount = 0;
     const engine = new SyncEngine(vault, data, client, scanner, async () => {
@@ -190,7 +191,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastFullScanAt: 0,
       lastIntegrityScanAt: 0,
       outbox: {},
-      inbox: {}
+      inbox: {},
+      pendingRenames: {}
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -250,7 +252,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastFullScanAt: 0,
       lastIntegrityScanAt: 0,
       outbox: {},
-      inbox: {}
+      inbox: {},
+      pendingRenames: {}
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -317,7 +320,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastFullScanAt: now,
       lastIntegrityScanAt: now,
       outbox: {},
-      inbox: {}
+      inbox: {},
+      pendingRenames: {}
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -353,7 +357,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastFullScanAt: now,
       lastIntegrityScanAt: now,
       outbox: {},
-      inbox: {}
+      inbox: {},
+      pendingRenames: {}
     };
     const client = {
       serverInfo: async () => ({ capabilities: [] }),
@@ -419,7 +424,8 @@ describe("SyncEngine snapshot reconciliation", () => {
           createdAt: 1
         }
       },
-      inbox: {}
+      inbox: {},
+      pendingRenames: {}
     };
     const client = {
       serverInfo: async () => ({ capabilities: ["operation-id"] }),
@@ -470,7 +476,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastFullScanAt: 0,
       lastIntegrityScanAt: 0,
       outbox: {},
-      inbox: {}
+      inbox: {},
+      pendingRenames: {}
     };
     let stagedBeforeRequest = false;
     const client = {
@@ -546,7 +553,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastFullScanAt: now,
       lastIntegrityScanAt: now,
       outbox: {},
-      inbox: {}
+      inbox: {},
+      pendingRenames: {}
     };
     const client = {
       serverInfo: async () => ({ capabilities: [] }),
@@ -613,7 +621,8 @@ describe("SyncEngine snapshot reconciliation", () => {
           stage: "verified",
           createdAt: 1
         }
-      }
+      },
+      pendingRenames: {}
     };
     const client = {
       serverInfo: async () => ({ capabilities: [] }),
@@ -662,7 +671,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastFullScanAt: 0,
       lastIntegrityScanAt: 0,
       outbox: {},
-      inbox: {}
+      inbox: {},
+      pendingRenames: {}
     };
     let requestedHashes: string[] = [];
     const uploadedHashes: string[] = [];
@@ -750,7 +760,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastFullScanAt: 0,
       lastIntegrityScanAt: 0,
       outbox: {},
-      inbox: {}
+      inbox: {},
+      pendingRenames: {}
     };
     const client = {
       serverInfo: async () => ({
@@ -787,6 +798,84 @@ describe("SyncEngine snapshot reconciliation", () => {
     expect(data.files["large.bin"]?.revision).toBe(2);
     expect(data.inbox).toEqual({});
     expect(summary.downloaded).toBe(1);
+  });
+
+  it("commits a high-confidence local rename as one logical operation", async () => {
+    const content = bytes("rename me");
+    const hash = await sha256(content);
+    const files = new Map<string, ArrayBuffer>([["new.md", content]]);
+    const adapter = createMemoryAdapter(files);
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+    const now = Date.now();
+    const renameId = "rename-event";
+    const data: PersistedData = {
+      schemaVersion: 7,
+      settings: testSettings(),
+      cursor: 1,
+      filterFingerprint: scanner.filterFingerprint(),
+      initialSyncCompleted: true,
+      pendingInitialSyncMode: null,
+      files: { "old.md": { hash, revision: 1, size: content.byteLength, modifiedAt: 1, deleted: false } },
+      scanCache: { "old.md": { hash, size: content.byteLength, modifiedAt: 1 } },
+      pendingPaths: { "old.md": 1, "new.md": 2 },
+      needsFullScan: false,
+      lastFullScanAt: now,
+      lastIntegrityScanAt: now,
+      outbox: {},
+      inbox: {},
+      pendingRenames: { [renameId]: { renameId, from: "old.md", to: "new.md", queuedAt: 1 } }
+    };
+    const client = {
+      serverInfo: async () => ({ capabilities: ["operation-id", "rename-v1"] }),
+      findOperation: async () => null,
+      status: async () => ({ latest_revision: 1, max_upload_bytes: 1024 }),
+      renameFile: async (from: string, to: string, baseRevision: number, modifiedAt: number, operationId: string) => {
+        expect(from).toBe("old.md");
+        expect(to).toBe("new.md");
+        expect(baseRevision).toBe(1);
+        expect(Object.hasOwn(data.outbox, operationId)).toBe(true);
+        return {
+          changed: true,
+          change: {
+            revision: 3,
+            path: to,
+            blob_hash: hash,
+            size: content.byteLength,
+            modified_at: modifiedAt,
+            deleted: false,
+            device_id: "test-device"
+          },
+          related_changes: [{
+            revision: 2,
+            path: from,
+            size: 0,
+            modified_at: modifiedAt,
+            deleted: true,
+            device_id: "test-device"
+          }]
+        };
+      },
+      putFile: async () => {
+        throw new Error("Rename must not upload content");
+      },
+      deleteFile: async () => {
+        throw new Error("Rename must not issue a separate delete");
+      },
+      listChanges: async () => ({ changes: [], cursor: 3, has_more: false })
+    } as unknown as SyncApiClient;
+    const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
+
+    const summary = await engine.run();
+
+    expect(data.files["old.md"]?.deleted).toBe(true);
+    expect(data.files["new.md"]?.revision).toBe(3);
+    expect(data.pendingRenames).toEqual({});
+    expect(data.pendingPaths).toEqual({});
+    expect(data.outbox).toEqual({});
+    expect(summary.renamed).toBe(1);
+    expect(summary.uploaded).toBe(0);
+    expect(summary.deletedRemote).toBe(0);
   });
 });
 

@@ -17,6 +17,7 @@ describe("migrateData", () => {
     expect(data.pendingPaths).toEqual({});
     expect(data.outbox).toEqual({});
     expect(data.inbox).toEqual({});
+    expect(data.pendingRenames).toEqual({});
   });
 
   it("keeps an existing schema-v1 installation initialized and schedules a snapshot", () => {

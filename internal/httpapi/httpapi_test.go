@@ -292,6 +292,41 @@ func TestChunkUploadManifestCommitAndWholeFileCompatibility(t *testing.T) {
 	}
 }
 
+func TestRenameEndpoint(t *testing.T) {
+	t.Parallel()
+	handler := testHandler(t, 1024)
+	data := []byte("rename")
+	source := mutate(t, handler, http.MethodPut, "old.md", 0, data, store.Hash(data))
+	body, _ := json.Marshal(map[string]string{"from": "old.md", "to": "new.md"})
+	request := authorizedRequest(http.MethodPost, "/api/v2/vaults/test/rename", bytes.NewReader(body))
+	request.Header.Set("X-Device-ID", "test-device")
+	request.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
+	request.Header.Set("X-Base-Revision", strconv.FormatInt(source.Change.Revision, 10))
+	request.Header.Set("X-Modified-At", "1234")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("rename status=%d body=%s", response.Code, response.Body)
+	}
+	var result struct {
+		Change         store.Change   `json:"change"`
+		RelatedChanges []store.Change `json:"related_changes"`
+		Changed        bool           `json:"changed"`
+	}
+	decodeJSON(t, response.Body.Bytes(), &result)
+	if !result.Changed || result.Change.Path != "new.md" || len(result.RelatedChanges) != 1 || !result.RelatedChanges[0].Deleted {
+		t.Fatalf("unexpected rename result: %+v", result)
+	}
+
+	operationRequest := authorizedRequest(http.MethodGet, "/api/v2/vaults/test/operations/11111111-1111-4111-8111-111111111111", nil)
+	operationRequest.Header.Set("X-Device-ID", "test-device")
+	operationResponse := httptest.NewRecorder()
+	handler.ServeHTTP(operationResponse, operationRequest)
+	if operationResponse.Code != http.StatusOK || !bytes.Contains(operationResponse.Body.Bytes(), []byte("related_changes")) {
+		t.Fatalf("rename operation status=%d body=%s", operationResponse.Code, operationResponse.Body)
+	}
+}
+
 type mutationPayload struct {
 	Change  store.Change `json:"change"`
 	Changed bool         `json:"changed"`

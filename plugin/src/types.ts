@@ -30,8 +30,9 @@ export interface ScanCacheEntry {
 
 export interface OutboxOperation {
   operationId: string;
-  kind: "put" | "delete";
+  kind: "put" | "delete" | "rename";
   path: string;
+  sourcePath?: string;
   baseRevision: number;
   modifiedAt: number;
   hash: string;
@@ -39,6 +40,13 @@ export interface OutboxOperation {
   createdAt: number;
   transport?: "whole" | "chunks";
   chunks?: ChunkRef[];
+}
+
+export interface PendingRename {
+  renameId: string;
+  from: string;
+  to: string;
+  queuedAt: number;
 }
 
 export interface ChunkRef {
@@ -75,6 +83,7 @@ export interface PersistedData {
   lastIntegrityScanAt: number;
   outbox: Record<string, OutboxOperation>;
   inbox: Record<string, InboxDownload>;
+  pendingRenames: Record<string, PendingRename>;
 }
 
 export type InitialSyncMode = "merge" | "remote" | "local";
@@ -109,6 +118,7 @@ export interface Change {
 
 export interface MutationResponse {
   change: Change;
+  related_changes?: Change[];
   changed: boolean;
 }
 
@@ -152,4 +162,5 @@ export interface SyncSummary {
   conflicts: number;
   skipped: number;
   restartRequired: boolean;
+  renamed: number;
 }
