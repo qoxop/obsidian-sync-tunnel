@@ -4,6 +4,8 @@ All notable changes to Sync Tunnel are documented here. The project follows Sema
 
 ## Unreleased
 
+## 0.3.0-beta.1 - 2026-08-16
+
 ### Added
 
 - Persistent, deduplicated Vault file-event queue with a two-second automatic-sync debounce.

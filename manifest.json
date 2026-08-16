@@ -1,7 +1,7 @@
 {
   "id": "sync-tunnel",
   "name": "Sync Tunnel",
-  "version": "0.2.0",
+  "version": "0.3.0-beta.1",
   "minAppVersion": "1.11.4",
   "description": "Synchronize an entire vault with a self-hosted Go server over Cloudflare Tunnel.",
   "author": "Obsidian Sync Tunnel contributors",
