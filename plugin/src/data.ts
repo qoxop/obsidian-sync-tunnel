@@ -1,6 +1,6 @@
 import type { InitialSyncMode, PersistedData, PluginSettings, SyncProfile } from "./types";
 
-export const DATA_SCHEMA_VERSION = 4;
+export const DATA_SCHEMA_VERSION = 5;
 
 export function migrateData(raw: unknown, generatedDeviceId = generateDeviceId()): PersistedData {
   const parsed = isRecord(raw) ? raw : {};
@@ -42,7 +42,8 @@ export function migrateData(raw: unknown, generatedDeviceId = generateDeviceId()
     needsFullScan: typeof parsed.needsFullScan === "boolean" ? parsed.needsFullScan : true,
     lastFullScanAt: nonNegativeNumber(parsed.lastFullScanAt),
     lastIntegrityScanAt: nonNegativeNumber(parsed.lastIntegrityScanAt),
-    outbox: isRecord(parsed.outbox) ? sanitizeOutbox(parsed.outbox) : {}
+    outbox: isRecord(parsed.outbox) ? sanitizeOutbox(parsed.outbox) : {},
+    inbox: isRecord(parsed.inbox) ? sanitizeInbox(parsed.inbox) : {}
   };
 }
 
@@ -82,6 +83,20 @@ function sanitizeOutbox(value: Record<string, unknown>): PersistedData["outbox"]
     const numbers = [raw.baseRevision, raw.modifiedAt, raw.size, raw.createdAt];
     if (!numbers.every((item) => typeof item === "number" && Number.isFinite(item) && item >= 0)) continue;
     result[operationId] = raw as unknown as PersistedData["outbox"][string];
+  }
+  return result;
+}
+
+function sanitizeInbox(value: Record<string, unknown>): PersistedData["inbox"] {
+  const result: PersistedData["inbox"] = {};
+  for (const [downloadId, raw] of Object.entries(value)) {
+    if (!isRecord(raw) || raw.downloadId !== downloadId) continue;
+    if (raw.stage !== "downloading" && raw.stage !== "verified" && raw.stage !== "replacing") continue;
+    const strings = [raw.path, raw.hash, raw.deviceId, raw.tempPath, raw.backupPath];
+    if (!strings.every((item) => typeof item === "string")) continue;
+    const numbers = [raw.revision, raw.size, raw.modifiedAt, raw.createdAt];
+    if (!numbers.every((item) => typeof item === "number" && Number.isFinite(item) && item >= 0)) continue;
+    result[downloadId] = raw as unknown as PersistedData["inbox"][string];
   }
   return result;
 }

@@ -57,6 +57,8 @@ describe("VaultScanner", () => {
     expect(scanner.isExcluded(".config/plugins/sync-tunnel/main.js")).toBe(true);
     expect(scanner.isExcluded(".config/themes/example/theme.css")).toBe(false);
     expect(scanner.isExcluded(".config/snippets/example.css")).toBe(false);
+    expect(scanner.isExcluded("folder/.sync-tunnel-download-11111111-1111-4111-8111-111111111111.tmp")).toBe(true);
+    expect(scanner.isExcluded(".sync-tunnel-backup-11111111-1111-4111-8111-111111111111.tmp")).toBe(true);
   });
 
   it("reuses a cached hash when file metadata is unchanged", async () => {

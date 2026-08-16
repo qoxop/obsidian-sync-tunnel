@@ -39,6 +39,20 @@ export interface OutboxOperation {
   createdAt: number;
 }
 
+export interface InboxDownload {
+  downloadId: string;
+  path: string;
+  revision: number;
+  hash: string;
+  size: number;
+  modifiedAt: number;
+  deviceId: string;
+  tempPath: string;
+  backupPath: string;
+  stage: "downloading" | "verified" | "replacing";
+  createdAt: number;
+}
+
 export interface PersistedData {
   schemaVersion: number;
   settings: PluginSettings;
@@ -53,6 +67,7 @@ export interface PersistedData {
   lastFullScanAt: number;
   lastIntegrityScanAt: number;
   outbox: Record<string, OutboxOperation>;
+  inbox: Record<string, InboxDownload>;
 }
 
 export type InitialSyncMode = "merge" | "remote" | "local";

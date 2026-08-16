@@ -3,7 +3,7 @@ import { DataAdapter, Vault } from "obsidian";
 import { ApiError, SyncApiClient } from "./api-client";
 import { sha256 } from "./hash";
 import { conflictPath, pathRequiresObsidianRestart } from "./path";
-import { Change, FileState, InitialSyncMode, LocalFile, OutboxOperation, PersistedData, SyncSummary } from "./types";
+import { Change, FileState, InboxDownload, InitialSyncMode, LocalFile, OutboxOperation, PersistedData, SyncSummary } from "./types";
 import { VaultScanner } from "./vault-scanner";
 
 const FULL_SCAN_INTERVAL_MS = 60 * 60 * 1000;
@@ -12,6 +12,7 @@ const INTEGRITY_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export class SyncEngine {
   private running = false;
   private supportsOperationIDs = false;
+  private readonly deferredRemotePaths = new Set<string>();
   private readonly adapter: DataAdapter;
 
   constructor(
@@ -39,6 +40,7 @@ export class SyncEngine {
     try {
       const initialMode = this.data.initialSyncCompleted ? null : this.data.pendingInitialSyncMode;
       if (!this.data.initialSyncCompleted && !initialMode) throw new Error("Initial sync requires explicit confirmation");
+      await this.resumeInbox(summary);
       const serverInfo = await this.client.serverInfo();
       this.supportsOperationIDs = serverInfo.capabilities.includes("operation-id");
       if (!this.supportsOperationIDs && Object.keys(this.data.outbox).length > 0) {
@@ -152,6 +154,7 @@ export class SyncEngine {
     deletionCandidates?: Set<string>
   ): Promise<void> {
     for (const [path, local] of localFiles) {
+      if (this.deferredRemotePaths.has(path)) continue;
       const previous = this.data.files[path];
       if (previous && !previous.deleted && previous.hash === local.hash) {
         previous.modifiedAt = local.modifiedAt;
@@ -189,6 +192,7 @@ export class SyncEngine {
 
     for (const [path, previous] of Object.entries(this.data.files)) {
       if (previous.deleted || localFiles.has(path) || this.scanner.isExcluded(path)) continue;
+      if (this.deferredRemotePaths.has(path)) continue;
       if (deletionCandidates && !deletionCandidates.has(path)) continue;
       const modifiedAt = Date.now();
       const operationID = await this.stageOperation("delete", path, previous.revision, modifiedAt, "", 0);
@@ -257,15 +261,19 @@ export class SyncEngine {
     }
 
     if (!change.blob_hash) throw new Error(`Server change ${change.revision} has no blob hash`);
+    const download = await this.stageDownload(change);
     const content = await this.client.downloadBlob(change.blob_hash);
-    await this.ensureParentDirectory(change.path);
-    await this.adapter.writeBinary(change.path, content, { ctime: change.modified_at, mtime: change.modified_at });
-    this.data.files[change.path] = stateFromChange(change);
-    this.data.scanCache[change.path] = {
-      hash: change.blob_hash,
-      size: change.size,
-      modifiedAt: change.modified_at
-    };
+    if (content.byteLength !== change.size || await sha256(content) !== change.blob_hash) {
+      throw new Error(`Downloaded content verification failed for ${change.path}`);
+    }
+    await this.adapter.writeBinary(download.tempPath, content, { ctime: change.modified_at, mtime: change.modified_at });
+    if (!await this.fileMatches(download.tempPath, download.hash, download.size)) {
+      throw new Error(`Temporary download verification failed for ${change.path}`);
+    }
+    download.stage = "verified";
+    await this.persist();
+    await this.installDownload(download);
+    await this.finishDownload(download);
     summary.downloaded += 1;
     if (pathRequiresObsidianRestart(change.path, this.vault.configDir)) summary.restartRequired = true;
   }
@@ -440,6 +448,116 @@ export class SyncEngine {
 
   private queuePath(path: string): void {
     this.data.pendingPaths[path] = Math.max(Date.now(), (this.data.pendingPaths[path] ?? 0) + 1);
+  }
+
+  private async stageDownload(change: Change): Promise<InboxDownload> {
+    if (!change.blob_hash) throw new Error(`Server change ${change.revision} has no blob hash`);
+    const downloadId = crypto.randomUUID();
+    const parts = change.path.split("/");
+    parts.pop();
+    const directory = parts.join("/");
+    const prefix = directory ? `${directory}/` : "";
+    const download: InboxDownload = {
+      downloadId,
+      path: change.path,
+      revision: change.revision,
+      hash: change.blob_hash,
+      size: change.size,
+      modifiedAt: change.modified_at,
+      deviceId: change.device_id,
+      tempPath: `${prefix}.sync-tunnel-download-${downloadId}.tmp`,
+      backupPath: `${prefix}.sync-tunnel-backup-${downloadId}.tmp`,
+      stage: "downloading",
+      createdAt: Date.now()
+    };
+    await this.ensureParentDirectory(change.path);
+    this.data.inbox[downloadId] = download;
+    await this.persist();
+    return download;
+  }
+
+  private async installDownload(download: InboxDownload): Promise<void> {
+    download.stage = "replacing";
+    await this.persist();
+    const targetExists = await this.adapter.exists(download.path);
+    if (targetExists && !await this.adapter.exists(download.backupPath)) {
+      await this.adapter.rename(download.path, download.backupPath);
+    }
+    try {
+      if (!await this.adapter.exists(download.tempPath)) {
+        throw new Error(`Temporary download is missing for ${download.path}`);
+      }
+      await this.adapter.rename(download.tempPath, download.path);
+    } catch (error) {
+      if (!await this.adapter.exists(download.path) && await this.adapter.exists(download.backupPath)) {
+        await this.adapter.rename(download.backupPath, download.path);
+      }
+      throw error;
+    }
+    if (!await this.fileMatches(download.path, download.hash, download.size)) {
+      if (await this.adapter.exists(download.path)) await this.adapter.remove(download.path);
+      if (await this.adapter.exists(download.backupPath)) await this.adapter.rename(download.backupPath, download.path);
+      throw new Error(`Installed download verification failed for ${download.path}`);
+    }
+    if (await this.adapter.exists(download.backupPath)) await this.adapter.remove(download.backupPath);
+  }
+
+  private async finishDownload(download: InboxDownload): Promise<void> {
+    this.data.files[download.path] = stateFromChange({
+      revision: download.revision,
+      path: download.path,
+      blob_hash: download.hash,
+      size: download.size,
+      modified_at: download.modifiedAt,
+      deleted: false,
+      device_id: download.deviceId
+    });
+    this.data.scanCache[download.path] = {
+      hash: download.hash,
+      size: download.size,
+      modifiedAt: download.modifiedAt
+    };
+    await this.persist();
+    delete this.data.inbox[download.downloadId];
+    await this.persist();
+  }
+
+  private async resumeInbox(summary: SyncSummary): Promise<void> {
+    const downloads = Object.values(this.data.inbox).sort((left, right) => left.createdAt - right.createdAt);
+    for (const download of downloads) {
+      if (await this.fileMatches(download.path, download.hash, download.size)) {
+        await this.cleanupDownloadArtifacts(download);
+        await this.finishDownload(download);
+        summary.downloaded += 1;
+        if (pathRequiresObsidianRestart(download.path, this.vault.configDir)) summary.restartRequired = true;
+        continue;
+      }
+      if (await this.fileMatches(download.tempPath, download.hash, download.size)) {
+        await this.installDownload(download);
+        await this.finishDownload(download);
+        summary.downloaded += 1;
+        if (pathRequiresObsidianRestart(download.path, this.vault.configDir)) summary.restartRequired = true;
+        continue;
+      }
+      if (!await this.adapter.exists(download.path) && await this.adapter.exists(download.backupPath)) {
+        await this.adapter.rename(download.backupPath, download.path);
+      }
+      await this.cleanupDownloadArtifacts(download);
+      delete this.data.inbox[download.downloadId];
+      this.deferredRemotePaths.add(download.path);
+      await this.persist();
+    }
+  }
+
+  private async cleanupDownloadArtifacts(download: InboxDownload): Promise<void> {
+    if (await this.adapter.exists(download.tempPath)) await this.adapter.remove(download.tempPath);
+    if (await this.adapter.exists(download.backupPath)) await this.adapter.remove(download.backupPath);
+  }
+
+  private async fileMatches(path: string, expectedHash: string, expectedSize: number): Promise<boolean> {
+    const stat = await this.adapter.stat(path);
+    if (!stat || stat.type !== "file" || stat.size !== expectedSize) return false;
+    return await sha256(await this.adapter.readBinary(path)) === expectedHash;
   }
 }
 

@@ -10,6 +10,7 @@ All notable changes to Sync Tunnel are documented here. The project follows Sema
 - Client scan cache keyed by path, size, and modification time, plus hourly metadata scans and daily integrity rehashing.
 - Transactional operation-ID records for retrying whole-file uploads and deletions without allocating duplicate revisions.
 - Persistent client outbox with post-restart operation-result lookup and safe replay of uncommitted mutations.
+- Persistent download inbox with size and SHA-256 verification, same-directory temporary files, backup-based replacement, and restart recovery.
 
 ### Changed
 
@@ -17,6 +18,7 @@ All notable changes to Sync Tunnel are documented here. The project follows Sema
 - Incremental deletion propagation is limited to paths observed by the event queue; periodic full scans remain the safety net.
 - Whole-file clients attach a UUID operation ID; servers remain compatible with clients that omit it.
 - A client with pending outbox entries refuses to write through a downgraded server that cannot prove operation results.
+- Sync Tunnel temporary download and backup files are always excluded from Vault synchronization.
 
 ## 0.2.0 - 2026-08-16
 

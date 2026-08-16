@@ -64,7 +64,8 @@ export class VaultScanner {
 
   isExcluded(path: string): boolean {
     const normalized = normalizeVaultPath(path);
-    return this.protectedPaths.some((protectedPath) => pathIsWithin(normalized, protectedPath))
+    return /(?:^|\/)\.sync-tunnel-(?:download|backup)-[0-9a-f-]+\.tmp$/iu.test(normalized)
+      || this.protectedPaths.some((protectedPath) => pathIsWithin(normalized, protectedPath))
       || this.excludedPatterns.some((pattern) => globMatches(normalized, pattern))
       || this.profileExcludes(normalized);
   }

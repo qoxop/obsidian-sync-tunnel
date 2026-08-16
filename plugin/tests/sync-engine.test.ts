@@ -85,7 +85,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       needsFullScan: true,
       lastFullScanAt: 0,
       lastIntegrityScanAt: 0,
-      outbox: {}
+      outbox: {},
+      inbox: {}
     };
     let persistCount = 0;
     const engine = new SyncEngine(vault, data, client, scanner, async () => {
@@ -188,7 +189,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       needsFullScan: true,
       lastFullScanAt: 0,
       lastIntegrityScanAt: 0,
-      outbox: {}
+      outbox: {},
+      inbox: {}
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -247,7 +249,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       needsFullScan: true,
       lastFullScanAt: 0,
       lastIntegrityScanAt: 0,
-      outbox: {}
+      outbox: {},
+      inbox: {}
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -313,7 +316,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       needsFullScan: false,
       lastFullScanAt: now,
       lastIntegrityScanAt: now,
-      outbox: {}
+      outbox: {},
+      inbox: {}
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -348,7 +352,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       needsFullScan: false,
       lastFullScanAt: now,
       lastIntegrityScanAt: now,
-      outbox: {}
+      outbox: {},
+      inbox: {}
     };
     const client = {
       serverInfo: async () => ({ capabilities: [] }),
@@ -413,7 +418,8 @@ describe("SyncEngine snapshot reconciliation", () => {
           size: content.byteLength,
           createdAt: 1
         }
-      }
+      },
+      inbox: {}
     };
     const client = {
       serverInfo: async () => ({ capabilities: ["operation-id"] }),
@@ -463,7 +469,8 @@ describe("SyncEngine snapshot reconciliation", () => {
       needsFullScan: true,
       lastFullScanAt: 0,
       lastIntegrityScanAt: 0,
-      outbox: {}
+      outbox: {},
+      inbox: {}
     };
     let stagedBeforeRequest = false;
     const client = {
@@ -504,6 +511,135 @@ describe("SyncEngine snapshot reconciliation", () => {
     expect(data.files["new.md"]?.revision).toBe(1);
     expect(summary.uploaded).toBe(1);
   });
+
+  it("keeps the original file and a recoverable inbox record when download verification fails", async () => {
+    const local = bytes("local");
+    const localHash = await sha256(local);
+    const expected = bytes("expected");
+    const expectedHash = await sha256(expected);
+    const corrupted = bytes("corrupt!");
+    const files = new Map<string, ArrayBuffer>([["note.md", local]]);
+    const adapter = createMemoryAdapter(files);
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+    const now = Date.now();
+    const remote: Change = {
+      revision: 2,
+      path: "note.md",
+      blob_hash: expectedHash,
+      size: expected.byteLength,
+      modified_at: 2,
+      deleted: false,
+      device_id: "remote"
+    };
+    const data: PersistedData = {
+      schemaVersion: 5,
+      settings: testSettings(),
+      cursor: 1,
+      filterFingerprint: scanner.filterFingerprint(),
+      initialSyncCompleted: true,
+      pendingInitialSyncMode: null,
+      files: { "note.md": { hash: localHash, revision: 1, size: local.byteLength, modifiedAt: 1, deleted: false } },
+      scanCache: { "note.md": { hash: localHash, size: local.byteLength, modifiedAt: 1 } },
+      pendingPaths: {},
+      needsFullScan: false,
+      lastFullScanAt: now,
+      lastIntegrityScanAt: now,
+      outbox: {},
+      inbox: {}
+    };
+    const client = {
+      serverInfo: async () => ({ capabilities: [] }),
+      status: async () => ({ latest_revision: 2, max_upload_bytes: 1024 }),
+      listChanges: async () => ({ changes: [remote], cursor: 2, has_more: false }),
+      downloadBlob: async () => corrupted,
+      putFile: async () => {
+        throw new Error("Unexpected upload");
+      },
+      deleteFile: async () => {
+        throw new Error("Unexpected delete");
+      }
+    } as unknown as SyncApiClient;
+    const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
+
+    await expect(engine.run()).rejects.toThrow("Downloaded content verification failed");
+
+    expect(text(files.get("note.md"))).toBe("local");
+    expect(Object.values(data.inbox)).toHaveLength(1);
+    expect(data.cursor).toBe(1);
+  });
+
+  it("finishes a verified inbox download after restart", async () => {
+    const oldContent = bytes("old");
+    const oldHash = await sha256(oldContent);
+    const remoteContent = bytes("remote");
+    const remoteHash = await sha256(remoteContent);
+    const downloadId = "11111111-1111-4111-8111-111111111111";
+    const tempPath = `.sync-tunnel-download-${downloadId}.tmp`;
+    const backupPath = `.sync-tunnel-backup-${downloadId}.tmp`;
+    const files = new Map<string, ArrayBuffer>([
+      ["note.md", oldContent],
+      [tempPath, remoteContent]
+    ]);
+    const adapter = createMemoryAdapter(files);
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+    const now = Date.now();
+    const data: PersistedData = {
+      schemaVersion: 5,
+      settings: testSettings(),
+      cursor: 1,
+      filterFingerprint: scanner.filterFingerprint(),
+      initialSyncCompleted: true,
+      pendingInitialSyncMode: null,
+      files: { "note.md": { hash: oldHash, revision: 1, size: oldContent.byteLength, modifiedAt: 1, deleted: false } },
+      scanCache: { "note.md": { hash: oldHash, size: oldContent.byteLength, modifiedAt: 1 } },
+      pendingPaths: {},
+      needsFullScan: false,
+      lastFullScanAt: now,
+      lastIntegrityScanAt: now,
+      outbox: {},
+      inbox: {
+        [downloadId]: {
+          downloadId,
+          path: "note.md",
+          revision: 2,
+          hash: remoteHash,
+          size: remoteContent.byteLength,
+          modifiedAt: 2,
+          deviceId: "remote",
+          tempPath,
+          backupPath,
+          stage: "verified",
+          createdAt: 1
+        }
+      }
+    };
+    const client = {
+      serverInfo: async () => ({ capabilities: [] }),
+      status: async () => ({ latest_revision: 2, max_upload_bytes: 1024 }),
+      listChanges: async () => ({ changes: [], cursor: 2, has_more: false }),
+      downloadBlob: async () => {
+        throw new Error("Verified inbox content must not be downloaded again");
+      },
+      putFile: async () => {
+        throw new Error("Unexpected upload");
+      },
+      deleteFile: async () => {
+        throw new Error("Unexpected delete");
+      }
+    } as unknown as SyncApiClient;
+    const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
+
+    const summary = await engine.run();
+
+    expect(text(files.get("note.md"))).toBe("remote");
+    expect(files.has(tempPath)).toBe(false);
+    expect(files.has(backupPath)).toBe(false);
+    expect(data.inbox).toEqual({});
+    expect(data.files["note.md"]?.revision).toBe(2);
+    expect(summary.downloaded).toBe(1);
+  });
 });
 
 function createMemoryAdapter(files: Map<string, ArrayBuffer>): DataAdapter {
@@ -526,6 +662,12 @@ function createMemoryAdapter(files: Map<string, ArrayBuffer>): DataAdapter {
       files.set(path, content.slice(0));
     },
     remove: async (path: string) => {
+      files.delete(path);
+    },
+    rename: async (path: string, destination: string) => {
+      const content = files.get(path);
+      if (!content) throw new Error(`Missing file ${path}`);
+      files.set(destination, content);
       files.delete(path);
     },
     mkdir: async () => undefined
