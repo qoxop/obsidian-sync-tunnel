@@ -2,6 +2,12 @@
 
 本项目不需要进入 Obsidian 官方社区目录。GitHub 保存源码和 Release，其他电脑使用 BRAT 根据仓库地址安装并检查更新。
 
+## Beta 候选版
+
+正式 Obsidian 插件版本保持 `x.y.z`。项目测试版本使用 `x.y.z-beta.n` GitHub 预发布，并通过 BRAT 1.1 或更高版本安装。候选版版本号只存在于独立 release commit/tag，不写入默认分支的 `manifest.json`，避免普通 Obsidian 更新通道误把 beta 当作稳定更新。
+
+测试者在 BRAT 中添加 `qoxop/obsidian-sync-tunnel` 并选择最新预发布或冻结到指定 beta 标签。正式版发布后，beta 测试者应通过 BRAT 主动切换；Obsidian 本身不保证从同一基础版本的 prerelease 自动升级到 stable。
+
 ## 1. 创建并关联 GitHub 仓库
 
 在 GitHub 创建一个空的公开仓库，不要初始化 README、LICENSE 或 `.gitignore`。然后在本仓库根目录运行：

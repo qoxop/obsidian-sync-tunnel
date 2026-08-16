@@ -4,8 +4,8 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const version = process.argv[2] ?? "";
-if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.test(version)) {
-  console.error("Usage: node scripts/set-plugin-version.mjs <x.y.z>");
+if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*))*))?$/u.test(version)) {
+  console.error("Usage: node scripts/set-plugin-version.mjs <x.y.z[-prerelease]>");
   process.exit(1);
 }
 

@@ -35,11 +35,17 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME"
-          plugin/main.js
-          manifest.json
-          plugin/styles.css
-          --verify-tag
-          --title "$GITHUB_REF_NAME"
-          --generate-notes
+        shell: bash
+        run: |
+          prerelease_flag=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            prerelease_flag+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            plugin/main.js \
+            manifest.json \
+            plugin/styles.css \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "${prerelease_flag[@]}"

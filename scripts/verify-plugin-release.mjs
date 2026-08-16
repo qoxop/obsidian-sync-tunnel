@@ -38,13 +38,13 @@ const manifest = JSON.parse(rootManifestText);
 const packageJson = readJson("plugin/package.json");
 const packageLock = readJson("plugin/package-lock.json");
 const versions = JSON.parse(rootVersionsText);
-const semanticVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
+const semanticVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*))*))?$/u;
 
 if (!/^[a-z0-9-]+$/u.test(manifest.id) || manifest.id.includes("obsidian") || manifest.id.endsWith("plugin")) {
   fail(`invalid Obsidian plugin ID '${manifest.id}'`);
 }
 if (!semanticVersion.test(manifest.version)) {
-  fail(`manifest version '${manifest.version}' must use x.y.z format`);
+  fail(`manifest version '${manifest.version}' must use semantic x.y.z or x.y.z-prerelease format`);
 }
 if (packageJson.version !== manifest.version || packageLock.version !== manifest.version || packageLock.packages?.[""]?.version !== manifest.version) {
   fail("plugin package versions must match manifest.json");
