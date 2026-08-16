@@ -15,6 +15,7 @@ All notable changes to Sync Tunnel are documented here. The project follows Sema
 - Notes-only, recommended-safe, full-Vault, and custom synchronization profiles.
 - Plugin unit tests, in-memory Vault tests, and first synchronization-engine state tests.
 - Connection test for Tunnel, Access, API token, Vault ID, and server protocol compatibility.
+- Immediate settings refresh after first-sync completion, removing the stale preview action.
 - Restart notice when synchronized plugins, themes, snippets, or community-plugin state changes.
 - Cross-platform case and Unicode path-collision detection.
 

@@ -12,6 +12,7 @@ import { VaultScanner } from "./vault-scanner";
 export default class SyncTunnelPlugin extends Plugin {
   data!: PersistedData;
   private statusElement?: HTMLElement;
+  private settingTab?: SyncTunnelSettingTab;
   private timerId?: number;
   private syncPromise?: Promise<SyncSummary>;
 
@@ -23,7 +24,8 @@ export default class SyncTunnelPlugin extends Plugin {
     this.setStatus("待同步");
     this.addRibbonIcon("refresh-cw", "Sync Tunnel: sync now", () => void this.runSync(true));
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.runSync(true) });
-    this.addSettingTab(new SyncTunnelSettingTab(this.app, this));
+    this.settingTab = new SyncTunnelSettingTab(this.app, this);
+    this.addSettingTab(this.settingTab);
 
     this.app.workspace.onLayoutReady(() => {
       this.restartTimer();
@@ -60,12 +62,14 @@ export default class SyncTunnelPlugin extends Plugin {
       return undefined;
     }
     try {
+      const wasInitialSync = !this.data.initialSyncCompleted;
       const client = await this.createClient();
       const scanner = this.createScanner();
       const engine = new SyncEngine(this.app.vault, this.data, client, scanner, () => this.savePluginData());
       this.setStatus("同步中…");
       this.syncPromise = engine.run();
       const summary = await this.syncPromise;
+      if (wasInitialSync && this.data.initialSyncCompleted) this.settingTab?.display();
       const text = formatSummary(summary);
       this.setStatus(`${summary.restartRequired ? "已同步，需重启" : "已同步"} ${new Date().toLocaleTimeString()}`);
       if (showNotice || summary.conflicts > 0 || summary.restartRequired) {
