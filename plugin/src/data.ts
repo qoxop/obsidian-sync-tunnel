@@ -1,6 +1,6 @@
 import type { InitialSyncMode, PersistedData, PluginSettings, SyncProfile } from "./types";
 
-export const DATA_SCHEMA_VERSION = 5;
+export const DATA_SCHEMA_VERSION = 6;
 
 export function migrateData(raw: unknown, generatedDeviceId = generateDeviceId()): PersistedData {
   const parsed = isRecord(raw) ? raw : {};

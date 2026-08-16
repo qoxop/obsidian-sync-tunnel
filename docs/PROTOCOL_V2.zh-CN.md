@@ -124,7 +124,7 @@ X-Content-SHA256
 
 ## 9. 分块扩展
 
-0.3 引入能力 `chunk-upload-v1`：
+0.3 引入能力 `chunk-upload-v1` 和 `chunk-download-v1`：
 
 1. 客户端计算固定大小 Chunk 和文件 Manifest；
 2. 查询服务端缺少的 Chunk；

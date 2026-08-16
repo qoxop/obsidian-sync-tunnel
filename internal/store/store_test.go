@@ -86,6 +86,54 @@ func TestListChangesPagination(t *testing.T) {
 	}
 }
 
+func TestChunkStorageAndManifestAssembly(t *testing.T) {
+	t.Parallel()
+	db := openTestStore(t)
+	ctx := context.Background()
+	data := []byte("chunk content")
+	hash := Hash(data)
+
+	missing, err := db.MissingChunks(ctx, []string{hash})
+	if err != nil || len(missing) != 1 || missing[0] != hash {
+		t.Fatalf("missing before upload: %v err=%v", missing, err)
+	}
+	changed, err := db.PutChunk(ctx, hash, data)
+	if err != nil || !changed {
+		t.Fatalf("put chunk: changed=%v err=%v", changed, err)
+	}
+	changed, err = db.PutChunk(ctx, hash, data)
+	if err != nil || changed {
+		t.Fatalf("idempotent put chunk: changed=%v err=%v", changed, err)
+	}
+	missing, err = db.MissingChunks(ctx, []string{hash, hash})
+	if err != nil || len(missing) != 0 {
+		t.Fatalf("missing after upload: %v err=%v", missing, err)
+	}
+	stored, err := db.GetChunk(ctx, hash)
+	if err != nil || string(stored) != string(data) {
+		t.Fatalf("get chunk: %q err=%v", stored, err)
+	}
+	assembled, err := db.AssembleChunks(ctx, hash, int64(len(data)), []ChunkRef{{Hash: hash, Size: int64(len(data))}})
+	if err != nil || string(assembled) != string(data) {
+		t.Fatalf("assemble chunks: %q err=%v", assembled, err)
+	}
+	var manifestCount int
+	if err := db.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM manifests WHERE content_hash=?`, hash).Scan(&manifestCount); err != nil || manifestCount != 1 {
+		t.Fatalf("manifest count=%d err=%v", manifestCount, err)
+	}
+	file, _, err := db.Put(ctx, "vault-a", "chunk.bin", "desktop", 0, 1, hash, assembled)
+	if err != nil || file.BlobHash != hash {
+		t.Fatalf("record chunked file: change=%+v err=%v", file, err)
+	}
+	manifestSize, manifestChunks, err := db.GetManifest(ctx, "vault-a", hash)
+	if err != nil || manifestSize != int64(len(data)) || len(manifestChunks) != 1 || manifestChunks[0].Hash != hash {
+		t.Fatalf("get manifest: size=%d chunks=%+v err=%v", manifestSize, manifestChunks, err)
+	}
+	if _, _, err := db.GetManifest(ctx, "vault-b", hash); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("manifest must be vault scoped, got %v", err)
+	}
+}
+
 func TestOperationIDReturnsOriginalCommittedResult(t *testing.T) {
 	t.Parallel()
 	db := openTestStore(t)
@@ -207,6 +255,12 @@ func TestSchemaMigrationFromVersionOneAddsOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 	if table != "operations" {
+		t.Fatalf("unexpected table %q", table)
+	}
+	if err := db.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='chunks'`).Scan(&table); err != nil {
+		t.Fatal(err)
+	}
+	if table != "chunks" {
 		t.Fatalf("unexpected table %q", table)
 	}
 }

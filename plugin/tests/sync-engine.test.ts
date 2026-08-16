@@ -640,6 +640,154 @@ describe("SyncEngine snapshot reconciliation", () => {
     expect(data.files["note.md"]?.revision).toBe(2);
     expect(summary.downloaded).toBe(1);
   });
+
+  it("uploads only server-missing chunks before committing a manifest", async () => {
+    const content = bytes("abcdefghij");
+    const contentHash = await sha256(content);
+    const files = new Map<string, ArrayBuffer>([["large.bin", content]]);
+    const adapter = createMemoryAdapter(files);
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+    const data: PersistedData = {
+      schemaVersion: 6,
+      settings: testSettings(),
+      cursor: 0,
+      filterFingerprint: scanner.filterFingerprint(),
+      initialSyncCompleted: true,
+      pendingInitialSyncMode: null,
+      files: {},
+      scanCache: {},
+      pendingPaths: {},
+      needsFullScan: true,
+      lastFullScanAt: 0,
+      lastIntegrityScanAt: 0,
+      outbox: {},
+      inbox: {}
+    };
+    let requestedHashes: string[] = [];
+    const uploadedHashes: string[] = [];
+    const client = {
+      serverInfo: async () => ({
+        capabilities: ["operation-id", "chunk-upload-v1"],
+        limits: { chunk_size: 4, chunk_concurrency: 2, max_chunk_query: 1000 }
+      }),
+      findOperation: async () => null,
+      status: async () => ({ latest_revision: 0, max_upload_bytes: 1024 }),
+      missingChunks: async (hashes: string[]) => {
+        requestedHashes = hashes;
+        return hashes.slice(1);
+      },
+      putChunk: async (hash: string, chunk: ArrayBuffer) => {
+        expect(await sha256(chunk)).toBe(hash);
+        uploadedHashes.push(hash);
+      },
+      commitManifest: async (_path: string, _base: number, modifiedAt: number, hash: string, size: number, chunks: Array<{ hash: string; size: number }>, operationId: string) => {
+        expect(Object.hasOwn(data.outbox, operationId)).toBe(true);
+        expect(hash).toBe(contentHash);
+        expect(size).toBe(content.byteLength);
+        expect(chunks.map((chunk) => chunk.size)).toEqual([4, 4, 2]);
+        return {
+          changed: true,
+          change: {
+            revision: 1,
+            path: "large.bin",
+            blob_hash: hash,
+            size,
+            modified_at: modifiedAt,
+            deleted: false,
+            device_id: "test-device"
+          }
+        };
+      },
+      putFile: async () => {
+        throw new Error("Chunk-capable upload must not use the whole-file endpoint");
+      },
+      deleteFile: async () => {
+        throw new Error("Unexpected delete");
+      },
+      listChanges: async () => ({ changes: [], cursor: 1, has_more: false })
+    } as unknown as SyncApiClient;
+    const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
+
+    const summary = await engine.run();
+
+    expect(requestedHashes).toHaveLength(3);
+    expect(uploadedHashes).toEqual(expect.arrayContaining(requestedHashes.slice(1)));
+    expect(uploadedHashes).toHaveLength(2);
+    expect(data.outbox).toEqual({});
+    expect(summary.uploaded).toBe(1);
+  });
+
+  it("downloads and verifies a file through its Chunk Manifest", async () => {
+    const remoteContent = bytes("abcdefghij");
+    const remoteHash = await sha256(remoteContent);
+    const chunkData = [bytes("abcd"), bytes("efgh"), bytes("ij")];
+    const chunks = await Promise.all(chunkData.map(async (data) => ({ hash: await sha256(data), size: data.byteLength })));
+    const files = new Map<string, ArrayBuffer>();
+    const adapter = createMemoryAdapter(files);
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+    const remote: Change = {
+      revision: 2,
+      path: "large.bin",
+      blob_hash: remoteHash,
+      size: remoteContent.byteLength,
+      modified_at: 2,
+      deleted: false,
+      device_id: "remote"
+    };
+    const data: PersistedData = {
+      schemaVersion: 6,
+      settings: testSettings(),
+      cursor: 1,
+      filterFingerprint: scanner.filterFingerprint(),
+      initialSyncCompleted: true,
+      pendingInitialSyncMode: null,
+      files: { "large.bin": { hash: "", revision: 1, size: 0, modifiedAt: 1, deleted: true } },
+      scanCache: {},
+      pendingPaths: {},
+      needsFullScan: true,
+      lastFullScanAt: 0,
+      lastIntegrityScanAt: 0,
+      outbox: {},
+      inbox: {}
+    };
+    const client = {
+      serverInfo: async () => ({
+        capabilities: ["chunk-download-v1"],
+        limits: { chunk_size: 4, chunk_concurrency: 2, max_chunk_query: 1000 }
+      }),
+      status: async () => ({ latest_revision: 2, max_upload_bytes: 1024 }),
+      listChanges: async () => ({ changes: [remote], cursor: 2, has_more: false }),
+      findManifest: async (hash: string) => {
+        expect(hash).toBe(remoteHash);
+        return { size: remoteContent.byteLength, chunks };
+      },
+      downloadChunk: async (hash: string) => {
+        const index = chunks.findIndex((chunk) => chunk.hash === hash);
+        const content = chunkData[index];
+        if (!content) throw new Error(`Unexpected Chunk ${hash}`);
+        return content;
+      },
+      downloadBlob: async () => {
+        throw new Error("Chunk Manifest download must not use the whole-file endpoint");
+      },
+      putFile: async () => {
+        throw new Error("Unexpected upload");
+      },
+      deleteFile: async () => {
+        throw new Error("Unexpected delete");
+      }
+    } as unknown as SyncApiClient;
+    const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
+
+    const summary = await engine.run();
+
+    expect(text(files.get("large.bin"))).toBe("abcdefghij");
+    expect(data.files["large.bin"]?.revision).toBe(2);
+    expect(data.inbox).toEqual({});
+    expect(summary.downloaded).toBe(1);
+  });
 });
 
 function createMemoryAdapter(files: Map<string, ArrayBuffer>): DataAdapter {

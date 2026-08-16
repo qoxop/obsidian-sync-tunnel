@@ -1,6 +1,6 @@
 import { requestUrl, RequestUrlParam, RequestUrlResponse } from "obsidian";
 
-import { Change, ChangesResponse, MutationResponse, ServerInfoResponse, SnapshotResponse, StatusResponse } from "./types";
+import { Change, ChangesResponse, ChunkRef, MutationResponse, ServerInfoResponse, SnapshotResponse, StatusResponse } from "./types";
 
 interface ClientOptions {
   serverUrl: string;
@@ -72,6 +72,63 @@ export class SyncApiClient {
         url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/operations/${encodeURIComponent(operationId)}`,
         method: "GET",
         headers: { "X-Device-ID": this.options.deviceId }
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404 && error.code === "not_found") return null;
+      throw error;
+    }
+  }
+
+  async missingChunks(hashes: string[]): Promise<string[]> {
+    const response = await this.jsonRequest<{ missing: string[] }>({
+      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/chunks/missing`,
+      method: "POST",
+      contentType: "application/json",
+      body: JSON.stringify({ hashes })
+    });
+    return response.missing;
+  }
+
+  async putChunk(hash: string, data: ArrayBuffer): Promise<void> {
+    await this.jsonRequest<{ changed: boolean }>({
+      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/chunks/${encodeURIComponent(hash)}`,
+      method: "PUT",
+      contentType: "application/octet-stream",
+      body: data
+    });
+  }
+
+  async commitManifest(
+    path: string,
+    baseRevision: number,
+    modifiedAt: number,
+    hash: string,
+    size: number,
+    chunks: ChunkRef[],
+    operationId: string
+  ): Promise<MutationResponse> {
+    return this.jsonRequest<MutationResponse>({
+      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/files/commit?path=${encodeURIComponent(path)}`,
+      method: "POST",
+      contentType: "application/json",
+      headers: this.mutationHeaders(operationId, baseRevision, modifiedAt, { "X-Content-SHA256": hash }),
+      body: JSON.stringify({ size, chunks })
+    });
+  }
+
+  async downloadChunk(hash: string): Promise<ArrayBuffer> {
+    const response = await this.request({
+      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/chunks/${encodeURIComponent(hash)}`,
+      method: "GET"
+    });
+    return response.arrayBuffer;
+  }
+
+  async findManifest(hash: string): Promise<{ size: number; chunks: ChunkRef[] } | null> {
+    try {
+      return await this.jsonRequest<{ size: number; chunks: ChunkRef[] }>({
+        url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/manifests/${encodeURIComponent(hash)}`,
+        method: "GET"
       });
     } catch (error) {
       if (error instanceof ApiError && error.status === 404 && error.code === "not_found") return null;

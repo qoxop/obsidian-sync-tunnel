@@ -234,6 +234,64 @@ func TestServerInfoAndStableSnapshot(t *testing.T) {
 	}
 }
 
+func TestChunkUploadManifestCommitAndWholeFileCompatibility(t *testing.T) {
+	t.Parallel()
+	handler := testHandler(t, 1024)
+	data := []byte("chunk content")
+	hash := store.Hash(data)
+
+	missingBody, _ := json.Marshal(map[string]any{"hashes": []string{hash}})
+	missingResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingResponse, authorizedRequest(http.MethodPost, "/api/v2/vaults/test/chunks/missing", bytes.NewReader(missingBody)))
+	if missingResponse.Code != http.StatusOK || !bytes.Contains(missingResponse.Body.Bytes(), []byte(hash)) {
+		t.Fatalf("missing chunks status=%d body=%s", missingResponse.Code, missingResponse.Body)
+	}
+
+	chunkResponse := httptest.NewRecorder()
+	handler.ServeHTTP(chunkResponse, authorizedRequest(http.MethodPut, "/api/v2/vaults/test/chunks/"+hash, bytes.NewReader(data)))
+	if chunkResponse.Code != http.StatusOK {
+		t.Fatalf("put chunk status=%d body=%s", chunkResponse.Code, chunkResponse.Body)
+	}
+
+	missingResponse = httptest.NewRecorder()
+	handler.ServeHTTP(missingResponse, authorizedRequest(http.MethodPost, "/api/v2/vaults/test/chunks/missing", bytes.NewReader(missingBody)))
+	if missingResponse.Code != http.StatusOK || bytes.Contains(missingResponse.Body.Bytes(), []byte(hash)) {
+		t.Fatalf("missing chunks after upload status=%d body=%s", missingResponse.Code, missingResponse.Body)
+	}
+
+	manifestBody, _ := json.Marshal(map[string]any{
+		"size":   len(data),
+		"chunks": []store.ChunkRef{{Hash: hash, Size: int64(len(data))}},
+	})
+	commitRequest := authorizedRequest(http.MethodPost, "/api/v2/vaults/test/files/commit?path=note.md", bytes.NewReader(manifestBody))
+	commitRequest.Header.Set("X-Device-ID", "test-device")
+	commitRequest.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
+	commitRequest.Header.Set("X-Base-Revision", "0")
+	commitRequest.Header.Set("X-Modified-At", "1234")
+	commitRequest.Header.Set("X-Content-SHA256", hash)
+	commitResponse := httptest.NewRecorder()
+	handler.ServeHTTP(commitResponse, commitRequest)
+	if commitResponse.Code != http.StatusOK {
+		t.Fatalf("commit manifest status=%d body=%s", commitResponse.Code, commitResponse.Body)
+	}
+
+	chunkDownload := httptest.NewRecorder()
+	handler.ServeHTTP(chunkDownload, authorizedRequest(http.MethodGet, "/api/v2/vaults/test/chunks/"+hash, nil))
+	if chunkDownload.Code != http.StatusOK || !bytes.Equal(chunkDownload.Body.Bytes(), data) {
+		t.Fatalf("get chunk status=%d body=%q", chunkDownload.Code, chunkDownload.Body.Bytes())
+	}
+	wholeDownload := httptest.NewRecorder()
+	handler.ServeHTTP(wholeDownload, authorizedRequest(http.MethodGet, "/api/v1/vaults/test/blobs/"+hash, nil))
+	if wholeDownload.Code != http.StatusOK || !bytes.Equal(wholeDownload.Body.Bytes(), data) {
+		t.Fatalf("whole-file compatibility status=%d body=%q", wholeDownload.Code, wholeDownload.Body.Bytes())
+	}
+	manifestResponse := httptest.NewRecorder()
+	handler.ServeHTTP(manifestResponse, authorizedRequest(http.MethodGet, "/api/v2/vaults/test/manifests/"+hash, nil))
+	if manifestResponse.Code != http.StatusOK || !bytes.Contains(manifestResponse.Body.Bytes(), []byte(hash)) {
+		t.Fatalf("get manifest status=%d body=%s", manifestResponse.Code, manifestResponse.Body)
+	}
+}
+
 type mutationPayload struct {
 	Change  store.Change `json:"change"`
 	Changed bool         `json:"changed"`

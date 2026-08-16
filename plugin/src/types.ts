@@ -37,6 +37,13 @@ export interface OutboxOperation {
   hash: string;
   size: number;
   createdAt: number;
+  transport?: "whole" | "chunks";
+  chunks?: ChunkRef[];
+}
+
+export interface ChunkRef {
+  hash: string;
+  size: number;
 }
 
 export interface InboxDownload {
@@ -121,7 +128,13 @@ export interface ServerInfoResponse {
   protocol: { min: number; max: number };
   capabilities: string[];
   database: { schema_version: number };
-  limits: { max_upload_bytes: number; max_page_size: number };
+  limits: {
+    max_upload_bytes: number;
+    max_page_size: number;
+    chunk_size?: number;
+    max_chunk_query?: number;
+    chunk_concurrency?: number;
+  };
 }
 
 export interface SnapshotResponse {

@@ -20,7 +20,7 @@ import (
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var operationIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
-const CurrentSchemaVersion = 2
+const CurrentSchemaVersion = 3
 
 var migrations = [][]string{
 	{
@@ -72,10 +72,25 @@ var migrations = [][]string{
 		)`,
 		`CREATE INDEX IF NOT EXISTS operations_created_at ON operations(created_at)`,
 	},
+	{
+		`CREATE TABLE IF NOT EXISTS chunks (
+			hash TEXT PRIMARY KEY,
+			size INTEGER NOT NULL,
+			relative_path TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS manifests (
+			content_hash TEXT PRIMARY KEY,
+			size INTEGER NOT NULL,
+			chunks_json TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		)`,
+	},
 }
 
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	blobDir string
 }
 
 type Change struct {
@@ -114,10 +129,14 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	store := &Store{db: db}
+	store := &Store{db: db, blobDir: filepath.Join(filepath.Dir(path), "blobs")}
 	if err := store.initialize(context.Background()); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Join(store.blobDir, "chunks"), 0o700); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create blob directory: %w", err)
 	}
 	return store, nil
 }

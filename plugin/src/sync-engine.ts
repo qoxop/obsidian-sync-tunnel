@@ -3,7 +3,7 @@ import { DataAdapter, Vault } from "obsidian";
 import { ApiError, SyncApiClient } from "./api-client";
 import { sha256 } from "./hash";
 import { conflictPath, pathRequiresObsidianRestart } from "./path";
-import { Change, FileState, InboxDownload, InitialSyncMode, LocalFile, OutboxOperation, PersistedData, SyncSummary } from "./types";
+import { Change, ChunkRef, FileState, InboxDownload, InitialSyncMode, LocalFile, OutboxOperation, PersistedData, SyncSummary } from "./types";
 import { VaultScanner } from "./vault-scanner";
 
 const FULL_SCAN_INTERVAL_MS = 60 * 60 * 1000;
@@ -12,6 +12,11 @@ const INTEGRITY_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export class SyncEngine {
   private running = false;
   private supportsOperationIDs = false;
+  private supportsChunkUpload = false;
+  private supportsChunkDownload = false;
+  private chunkSize = 4 * 1024 * 1024;
+  private chunkConcurrency = 3;
+  private maxChunkQuery = 1000;
   private readonly deferredRemotePaths = new Set<string>();
   private readonly adapter: DataAdapter;
 
@@ -43,6 +48,11 @@ export class SyncEngine {
       await this.resumeInbox(summary);
       const serverInfo = await this.client.serverInfo();
       this.supportsOperationIDs = serverInfo.capabilities.includes("operation-id");
+      this.supportsChunkUpload = this.supportsOperationIDs && serverInfo.capabilities.includes("chunk-upload-v1");
+      this.supportsChunkDownload = serverInfo.capabilities.includes("chunk-download-v1");
+      this.chunkSize = positiveInteger(serverInfo.limits?.chunk_size, this.chunkSize);
+      this.chunkConcurrency = Math.min(8, positiveInteger(serverInfo.limits?.chunk_concurrency, this.chunkConcurrency));
+      this.maxChunkQuery = Math.min(1000, positiveInteger(serverInfo.limits?.max_chunk_query, this.maxChunkQuery));
       if (!this.supportsOperationIDs && Object.keys(this.data.outbox).length > 0) {
         throw new Error("服务器不支持 operation-id，无法安全恢复尚未确认的写入；请先重新升级服务端");
       }
@@ -169,9 +179,22 @@ export class SyncEngine {
       const currentHash = await sha256(content);
       const stat = await this.adapter.stat(path);
       if (!stat || stat.type !== "file") continue;
-      const operationID = await this.stageOperation("put", path, previous?.revision ?? 0, stat.mtime, currentHash, content.byteLength);
+      const chunks = this.supportsChunkUpload && content.byteLength > this.chunkSize
+        ? await this.buildChunkRefs(content)
+        : undefined;
+      const operationID = await this.stageOperation(
+        "put",
+        path,
+        previous?.revision ?? 0,
+        stat.mtime,
+        currentHash,
+        content.byteLength,
+        chunks
+      );
       try {
-        const result = await this.client.putFile(path, previous?.revision ?? 0, stat.mtime, currentHash, content, operationID);
+        const result = chunks && operationID
+          ? await this.uploadChunkedFile(path, previous?.revision ?? 0, stat.mtime, currentHash, content, chunks, operationID)
+          : await this.client.putFile(path, previous?.revision ?? 0, stat.mtime, currentHash, content, operationID);
         this.data.files[path] = stateFromChange(result.change);
         this.data.scanCache[path] = {
           hash: currentHash,
@@ -262,7 +285,7 @@ export class SyncEngine {
 
     if (!change.blob_hash) throw new Error(`Server change ${change.revision} has no blob hash`);
     const download = await this.stageDownload(change);
-    const content = await this.client.downloadBlob(change.blob_hash);
+    const content = await this.downloadRemoteContent(change.blob_hash, change.size);
     if (content.byteLength !== change.size || await sha256(content) !== change.blob_hash) {
       throw new Error(`Downloaded content verification failed for ${change.path}`);
     }
@@ -326,7 +349,8 @@ export class SyncEngine {
     baseRevision: number,
     modifiedAt: number,
     hash: string,
-    size: number
+    size: number,
+    chunks?: ChunkRef[]
   ): Promise<string | undefined> {
     if (!this.supportsOperationIDs) return undefined;
     const operationId = crypto.randomUUID();
@@ -338,7 +362,9 @@ export class SyncEngine {
       modifiedAt,
       hash,
       size,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      transport: chunks ? "chunks" : "whole",
+      chunks
     };
     await this.persist();
     return operationId;
@@ -382,14 +408,27 @@ export class SyncEngine {
           continue;
         }
         try {
-          const result = await this.client.putFile(
-            operation.path,
-            operation.baseRevision,
-            operation.modifiedAt,
-            operation.hash,
-            content,
-            operation.operationId
-          );
+          const chunks = operation.transport === "chunks"
+            ? await this.buildChunkRefs(content)
+            : undefined;
+          const result = chunks && this.supportsChunkUpload
+            ? await this.uploadChunkedFile(
+              operation.path,
+              operation.baseRevision,
+              operation.modifiedAt,
+              operation.hash,
+              content,
+              chunks,
+              operation.operationId
+            )
+            : await this.client.putFile(
+              operation.path,
+              operation.baseRevision,
+              operation.modifiedAt,
+              operation.hash,
+              content,
+              operation.operationId
+            );
           await this.acceptRecoveredOperation(operation, result.change, result.changed, summary);
         } catch (error) {
           if (!(error instanceof ApiError) || error.code !== "revision_conflict" || !error.current) throw error;
@@ -448,6 +487,90 @@ export class SyncEngine {
 
   private queuePath(path: string): void {
     this.data.pendingPaths[path] = Math.max(Date.now(), (this.data.pendingPaths[path] ?? 0) + 1);
+  }
+
+  private async buildChunkRefs(content: ArrayBuffer): Promise<ChunkRef[]> {
+    const chunks: ChunkRef[] = [];
+    for (let offset = 0; offset < content.byteLength; offset += this.chunkSize) {
+      const data = content.slice(offset, Math.min(content.byteLength, offset + this.chunkSize));
+      chunks.push({ hash: await sha256(data), size: data.byteLength });
+    }
+    return chunks;
+  }
+
+  private async uploadChunkedFile(
+    path: string,
+    baseRevision: number,
+    modifiedAt: number,
+    hash: string,
+    content: ArrayBuffer,
+    chunks: ChunkRef[],
+    operationId: string
+  ) {
+    const locations = new Map<string, { offset: number; size: number }>();
+    let offset = 0;
+    for (const chunk of chunks) {
+      if (!locations.has(chunk.hash)) locations.set(chunk.hash, { offset, size: chunk.size });
+      offset += chunk.size;
+    }
+    if (offset !== content.byteLength) throw new Error(`Chunk manifest size mismatch for ${path}`);
+    const hashes = [...locations.keys()];
+    const missing: string[] = [];
+    for (let index = 0; index < hashes.length; index += this.maxChunkQuery) {
+      const requested = hashes.slice(index, index + this.maxChunkQuery);
+      const response = await this.client.missingChunks(requested);
+      const requestedSet = new Set(requested);
+      for (const missingHash of response) {
+        if (!requestedSet.has(missingHash)) throw new Error("Server returned an unknown missing Chunk hash");
+        missing.push(missingHash);
+      }
+    }
+    let next = 0;
+    const uploadNext = async (): Promise<void> => {
+      while (next < missing.length) {
+        const hashToUpload = missing[next];
+        next += 1;
+        if (!hashToUpload) continue;
+        const location = locations.get(hashToUpload);
+        if (!location) throw new Error("Missing Chunk has no local location");
+        const data = content.slice(location.offset, location.offset + location.size);
+        if (await sha256(data) !== hashToUpload) throw new Error("Local Chunk changed before upload");
+        await this.client.putChunk(hashToUpload, data);
+      }
+    };
+    await Promise.all(Array.from(
+      { length: Math.min(this.chunkConcurrency, Math.max(1, missing.length)) },
+      () => uploadNext()
+    ));
+    return this.client.commitManifest(path, baseRevision, modifiedAt, hash, content.byteLength, chunks, operationId);
+  }
+
+  private async downloadRemoteContent(hash: string, expectedSize: number): Promise<ArrayBuffer> {
+    if (!this.supportsChunkDownload || expectedSize <= this.chunkSize) return this.client.downloadBlob(hash);
+    const manifest = await this.client.findManifest(hash);
+    if (!manifest) return this.client.downloadBlob(hash);
+    if (manifest.size !== expectedSize) throw new Error("Server Manifest size does not match the file change");
+    if (manifest.chunks.length !== Math.ceil(expectedSize / this.chunkSize)) {
+      throw new Error("Server Manifest has an invalid Chunk count");
+    }
+    const result = new Uint8Array(expectedSize);
+    let offset = 0;
+    for (const chunk of manifest.chunks) {
+      if (chunk.size < 1 || chunk.size > this.chunkSize || offset + chunk.size > expectedSize) {
+        throw new Error("Server returned an invalid Chunk Manifest");
+      }
+      if (offset + chunk.size < expectedSize && chunk.size !== this.chunkSize) {
+        throw new Error("Server returned a non-fixed intermediate Chunk");
+      }
+      const data = await this.client.downloadChunk(chunk.hash);
+      if (data.byteLength !== chunk.size || await sha256(data) !== chunk.hash) {
+        throw new Error("Downloaded Chunk verification failed");
+      }
+      result.set(new Uint8Array(data), offset);
+      offset += chunk.size;
+    }
+    if (offset !== expectedSize) throw new Error("Chunk Manifest does not cover the file size");
+    return result.buffer;
   }
 
   private async stageDownload(change: Change): Promise<InboxDownload> {
@@ -569,4 +692,8 @@ function stateFromChange(change: Change): FileState {
     modifiedAt: change.modified_at,
     deleted: change.deleted
   };
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
 }
