@@ -2,7 +2,13 @@ import { DataAdapter, Vault } from "obsidian";
 
 import { sha256 } from "./hash";
 import { assertNoPortablePathCollisions, globMatches, normalizeVaultPath, pathIsWithin } from "./path";
-import { LocalFile, SyncProfile } from "./types";
+import { LocalFile, ScanCacheEntry, SyncProfile } from "./types";
+
+export interface ScanOptions {
+  cache?: Record<string, ScanCacheEntry>;
+  paths?: Iterable<string>;
+  forceHash?: boolean;
+}
 
 export class VaultScanner {
   private readonly adapter: DataAdapter;
@@ -16,22 +22,43 @@ export class VaultScanner {
     this.adapter = vault.adapter;
   }
 
-  async scan(): Promise<Map<string, LocalFile>> {
-    const paths = await this.listFiles("");
+  async scan(options: ScanOptions = {}): Promise<Map<string, LocalFile>> {
+    const requestedPaths = options.paths
+      ? [...new Set([...options.paths].map(normalizeVaultPath))]
+      : undefined;
+    const paths = requestedPaths ?? await this.listFiles("");
     const includedPaths = paths.filter((path) => !this.isExcluded(path));
-    assertNoPortablePathCollisions(includedPaths);
     const entries = new Map<string, LocalFile>();
     for (const path of includedPaths.sort((left, right) => left.localeCompare(right))) {
       const stat = await this.adapter.stat(path);
       if (!stat || stat.type !== "file") continue;
-      const data = await this.adapter.readBinary(path);
+      const cached = options.cache?.[path];
+      const canReuseHash = !options.forceHash
+        && cached
+        && cached.size === stat.size
+        && cached.modifiedAt === stat.mtime;
+      const hash = canReuseHash
+        ? cached.hash
+        : await sha256(await this.adapter.readBinary(path));
       entries.set(path, {
         path,
-        hash: await sha256(data),
-        size: data.byteLength,
+        hash,
+        size: stat.size,
         modifiedAt: stat.mtime
       });
     }
+    const knownPaths = requestedPaths
+      ? new Set(Object.keys(options.cache ?? {}))
+      : new Set<string>();
+    if (requestedPaths) {
+      for (const path of includedPaths) {
+        if (entries.has(path)) knownPaths.add(path);
+        else knownPaths.delete(path);
+      }
+    } else {
+      for (const path of entries.keys()) knownPaths.add(path);
+    }
+    assertNoPortablePathCollisions([...knownPaths]);
     return entries;
   }
 

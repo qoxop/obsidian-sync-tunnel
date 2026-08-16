@@ -58,4 +58,47 @@ describe("VaultScanner", () => {
     expect(scanner.isExcluded(".config/themes/example/theme.css")).toBe(false);
     expect(scanner.isExcluded(".config/snippets/example.css")).toBe(false);
   });
+
+  it("reuses a cached hash when file metadata is unchanged", async () => {
+    let readCount = 0;
+    const adapter = {
+      list: async () => ({ files: ["note.md"], folders: [] }),
+      stat: async () => ({ type: "file", ctime: 1, mtime: 42, size: 7 }),
+      readBinary: async () => {
+        readCount += 1;
+        return new TextEncoder().encode("content").buffer;
+      }
+    } as unknown as DataAdapter;
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+
+    const result = await scanner.scan({
+      cache: { "note.md": { hash: "cached-hash", size: 7, modifiedAt: 42 } }
+    });
+
+    expect(result.get("note.md")?.hash).toBe("cached-hash");
+    expect(readCount).toBe(0);
+  });
+
+  it("rehashes an explicitly queued path even when metadata is unchanged", async () => {
+    let readCount = 0;
+    const adapter = {
+      stat: async () => ({ type: "file", ctime: 1, mtime: 42, size: 7 }),
+      readBinary: async () => {
+        readCount += 1;
+        return new TextEncoder().encode("changed").buffer;
+      }
+    } as unknown as DataAdapter;
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+
+    const result = await scanner.scan({
+      cache: { "note.md": { hash: "old-hash", size: 7, modifiedAt: 42 } },
+      paths: ["note.md"],
+      forceHash: true
+    });
+
+    expect(result.get("note.md")?.hash).not.toBe("old-hash");
+    expect(readCount).toBe(1);
+  });
 });

@@ -1,6 +1,6 @@
 import type { InitialSyncMode, PersistedData, PluginSettings, SyncProfile } from "./types";
 
-export const DATA_SCHEMA_VERSION = 2;
+export const DATA_SCHEMA_VERSION = 3;
 
 export function migrateData(raw: unknown, generatedDeviceId = generateDeviceId()): PersistedData {
   const parsed = isRecord(raw) ? raw : {};
@@ -36,7 +36,12 @@ export function migrateData(raw: unknown, generatedDeviceId = generateDeviceId()
       ? parsed.initialSyncCompleted
       : previousSchemaVersion >= 1,
     pendingInitialSyncMode: isInitialSyncMode(parsed.pendingInitialSyncMode) ? parsed.pendingInitialSyncMode : null,
-    files: isRecord(parsed.files) ? parsed.files as PersistedData["files"] : {}
+    files: isRecord(parsed.files) ? parsed.files as PersistedData["files"] : {},
+    scanCache: isRecord(parsed.scanCache) ? parsed.scanCache as PersistedData["scanCache"] : {},
+    pendingPaths: isRecord(parsed.pendingPaths) ? sanitizePendingPaths(parsed.pendingPaths) : {},
+    needsFullScan: typeof parsed.needsFullScan === "boolean" ? parsed.needsFullScan : true,
+    lastFullScanAt: nonNegativeNumber(parsed.lastFullScanAt),
+    lastIntegrityScanAt: nonNegativeNumber(parsed.lastIntegrityScanAt)
   };
 }
 
@@ -55,4 +60,14 @@ function isInitialSyncMode(value: unknown): value is InitialSyncMode {
 
 function isSyncProfile(value: unknown): value is SyncProfile {
   return value === "notes" || value === "recommended" || value === "full" || value === "custom";
+}
+
+function sanitizePendingPaths(value: Record<string, unknown>): Record<string, number> {
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => (
+    entry[0].length > 0 && typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0
+  )));
+}
+
+function nonNegativeNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }

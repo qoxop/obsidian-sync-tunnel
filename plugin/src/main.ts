@@ -1,4 +1,4 @@
-import { Notice, Plugin } from "obsidian";
+import { Notice, Plugin, TFile } from "obsidian";
 
 import { SyncApiClient } from "./api-client";
 import { migrateData } from "./data";
@@ -7,6 +7,7 @@ import { InitialSyncModal } from "./initial-sync-modal";
 import { SyncTunnelSettingTab } from "./settings";
 import { SyncEngine } from "./sync-engine";
 import { InitialSyncMode, PersistedData, SyncSummary } from "./types";
+import { normalizeVaultPath } from "./path";
 import { VaultScanner } from "./vault-scanner";
 
 export default class SyncTunnelPlugin extends Plugin {
@@ -14,6 +15,8 @@ export default class SyncTunnelPlugin extends Plugin {
   private statusElement?: HTMLElement;
   private settingTab?: SyncTunnelSettingTab;
   private timerId?: number;
+  private eventSaveTimerId?: number;
+  private eventSyncTimerId?: number;
   private syncPromise?: Promise<SyncSummary>;
 
   async onload(): Promise<void> {
@@ -26,6 +29,13 @@ export default class SyncTunnelPlugin extends Plugin {
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.runSync(true) });
     this.settingTab = new SyncTunnelSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
+    this.registerEvent(this.app.vault.on("create", (file) => this.recordVaultChange(file.path, file instanceof TFile)));
+    this.registerEvent(this.app.vault.on("modify", (file) => this.recordVaultChange(file.path, file instanceof TFile)));
+    this.registerEvent(this.app.vault.on("delete", (file) => this.recordVaultChange(file.path, file instanceof TFile)));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      this.recordVaultChange(oldPath, file instanceof TFile);
+      this.recordVaultChange(file.path, file instanceof TFile);
+    }));
 
     this.app.workspace.onLayoutReady(() => {
       this.restartTimer();
@@ -35,6 +45,8 @@ export default class SyncTunnelPlugin extends Plugin {
 
   onunload(): void {
     this.clearTimer();
+    if (this.eventSaveTimerId !== undefined) window.clearTimeout(this.eventSaveTimerId);
+    if (this.eventSyncTimerId !== undefined) window.clearTimeout(this.eventSyncTimerId);
   }
 
   async savePluginData(): Promise<void> {
@@ -175,6 +187,37 @@ export default class SyncTunnelPlugin extends Plugin {
   private clearTimer(): void {
     if (this.timerId !== undefined) window.clearInterval(this.timerId);
     this.timerId = undefined;
+  }
+
+  private recordVaultChange(path: string, isFile: boolean): void {
+    const normalized = normalizeVaultPath(path);
+    if (!normalized || this.createScanner().isExcluded(normalized)) return;
+    if (isFile) {
+      this.data.pendingPaths[normalized] = Math.max(
+        Date.now(),
+        (this.data.pendingPaths[normalized] ?? 0) + 1
+      );
+    } else {
+      this.data.needsFullScan = true;
+    }
+    this.scheduleEventStateSave();
+    if (this.data.settings.automaticSync && this.isConfigured()) this.scheduleEventSync();
+  }
+
+  private scheduleEventStateSave(): void {
+    if (this.eventSaveTimerId !== undefined) window.clearTimeout(this.eventSaveTimerId);
+    this.eventSaveTimerId = window.setTimeout(() => {
+      this.eventSaveTimerId = undefined;
+      void this.savePluginData();
+    }, 500);
+  }
+
+  private scheduleEventSync(): void {
+    if (this.eventSyncTimerId !== undefined) window.clearTimeout(this.eventSyncTimerId);
+    this.eventSyncTimerId = window.setTimeout(() => {
+      this.eventSyncTimerId = undefined;
+      void this.runSync(false);
+    }, 2000);
   }
 
   private setStatus(text: string): void {

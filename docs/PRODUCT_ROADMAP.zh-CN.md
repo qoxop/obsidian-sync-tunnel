@@ -64,6 +64,8 @@ Sync Tunnel 1.0 面向单个自托管管理员，提供多 Vault、多设备的 
 
 ### 0.3 性能协议
 
+实现设计与当前进度见 [0.3 性能协议实施方案](PERFORMANCE_PROTOCOL_0.3.zh-CN.md)。
+
 - 文件事件队列、mtime/size 缓存和周期性校验扫描；
 - 持久化 outbox/inbox；
 - 临时写入、哈希校验和原子替换；

@@ -6,6 +6,18 @@ All notable changes to Sync Tunnel are documented here. The project follows Sema
 
 ### Added
 
+- Persistent, deduplicated Vault file-event queue with a two-second automatic-sync debounce.
+- Client scan cache keyed by path, size, and modification time, plus hourly metadata scans and daily integrity rehashing.
+
+### Changed
+
+- Ordinary unchanged synchronization reuses cached hashes instead of reading every file body.
+- Incremental deletion propagation is limited to paths observed by the event queue; periodic full scans remain the safety net.
+
+## 0.2.0 - 2026-08-16
+
+### Added
+
 - Product roadmap, Protocol v2 draft, threat model, and release test strategy.
 - Versioned SQLite schema migration foundation.
 - Authenticated `/api/v2/server-info` capability discovery endpoint.

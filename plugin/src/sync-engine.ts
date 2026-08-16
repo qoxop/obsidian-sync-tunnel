@@ -6,6 +6,9 @@ import { conflictPath, pathRequiresObsidianRestart } from "./path";
 import { Change, FileState, InitialSyncMode, LocalFile, PersistedData, SyncSummary } from "./types";
 import { VaultScanner } from "./vault-scanner";
 
+const FULL_SCAN_INTERVAL_MS = 60 * 60 * 1000;
+const INTEGRITY_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
 export class SyncEngine {
   private running = false;
   private readonly adapter: DataAdapter;
@@ -37,16 +40,45 @@ export class SyncEngine {
       if (!this.data.initialSyncCompleted && !initialMode) throw new Error("Initial sync requires explicit confirmation");
       const status = await this.client.status();
       const filterFingerprint = this.scanner.filterFingerprint();
-      if (this.data.filterFingerprint !== filterFingerprint || initialMode) {
+      const filterChanged = this.data.filterFingerprint !== filterFingerprint;
+      if (filterChanged || initialMode) {
         await this.reconcileSnapshot(filterFingerprint, summary, initialMode);
       }
-      const localFiles = await this.scanner.scan();
-      await this.pushLocalChanges(localFiles, status.max_upload_bytes, summary);
+      const now = Date.now();
+      const pendingPaths = { ...this.data.pendingPaths };
+      const integrityScanDue = now - this.data.lastIntegrityScanAt >= INTEGRITY_SCAN_INTERVAL_MS;
+      const fullScan = filterChanged
+        || Boolean(initialMode)
+        || this.data.needsFullScan
+        || Object.keys(this.data.scanCache).length === 0
+        || now - this.data.lastFullScanAt >= FULL_SCAN_INTERVAL_MS
+        || integrityScanDue;
+      const paths = fullScan ? undefined : Object.keys(pendingPaths);
+      const localFiles = await this.scanner.scan({
+        cache: this.data.scanCache,
+        paths,
+        // A queued adapter event is positive evidence that the file changed.
+        // Hash it even when a tool preserved mtime and size.
+        forceHash: integrityScanDue || !fullScan
+      });
+      this.updateScanCache(localFiles, fullScan, paths ?? []);
+      await this.pushLocalChanges(
+        localFiles,
+        status.max_upload_bytes,
+        summary,
+        fullScan ? undefined : new Set(paths)
+      );
       await this.pullRemoteChanges(summary);
       if (initialMode) {
         this.data.initialSyncCompleted = true;
         this.data.pendingInitialSyncMode = null;
       }
+      if (fullScan) {
+        this.data.needsFullScan = false;
+        this.data.lastFullScanAt = now;
+      }
+      if (integrityScanDue) this.data.lastIntegrityScanAt = now;
+      this.acknowledgePendingPaths(pendingPaths);
       await this.persist();
       return summary;
     } finally {
@@ -106,7 +138,12 @@ export class SyncEngine {
     }
   }
 
-  private async pushLocalChanges(localFiles: Map<string, LocalFile>, maxUploadBytes: number, summary: SyncSummary): Promise<void> {
+  private async pushLocalChanges(
+    localFiles: Map<string, LocalFile>,
+    maxUploadBytes: number,
+    summary: SyncSummary,
+    deletionCandidates?: Set<string>
+  ): Promise<void> {
     for (const [path, local] of localFiles) {
       const previous = this.data.files[path];
       if (previous && !previous.deleted && previous.hash === local.hash) {
@@ -125,6 +162,11 @@ export class SyncEngine {
       try {
         const result = await this.client.putFile(path, previous?.revision ?? 0, stat.mtime, currentHash, content);
         this.data.files[path] = stateFromChange(result.change);
+        this.data.scanCache[path] = {
+          hash: currentHash,
+          size: content.byteLength,
+          modifiedAt: stat.mtime
+        };
         if (result.changed) summary.uploaded += 1;
         else summary.skipped += 1;
       } catch (error) {
@@ -137,6 +179,7 @@ export class SyncEngine {
 
     for (const [path, previous] of Object.entries(this.data.files)) {
       if (previous.deleted || localFiles.has(path) || this.scanner.isExcluded(path)) continue;
+      if (deletionCandidates && !deletionCandidates.has(path)) continue;
       try {
         const result = await this.client.deleteFile(path, previous.revision, Date.now());
         this.data.files[path] = stateFromChange(result.change);
@@ -195,6 +238,7 @@ export class SyncEngine {
         if (pathRequiresObsidianRestart(change.path, this.vault.configDir)) summary.restartRequired = true;
       }
       this.data.files[change.path] = stateFromChange(change);
+      delete this.data.scanCache[change.path];
       return;
     }
 
@@ -203,6 +247,11 @@ export class SyncEngine {
     await this.ensureParentDirectory(change.path);
     await this.adapter.writeBinary(change.path, content, { ctime: change.modified_at, mtime: change.modified_at });
     this.data.files[change.path] = stateFromChange(change);
+    this.data.scanCache[change.path] = {
+      hash: change.blob_hash,
+      size: change.size,
+      modifiedAt: change.modified_at
+    };
     summary.downloaded += 1;
     if (pathRequiresObsidianRestart(change.path, this.vault.configDir)) summary.restartRequired = true;
   }
@@ -228,6 +277,24 @@ export class SyncEngine {
     for (const part of parts) {
       current = current ? `${current}/${part}` : part ?? "";
       if (current && !(await this.adapter.exists(current))) await this.adapter.mkdir(current);
+    }
+  }
+
+  private updateScanCache(localFiles: Map<string, LocalFile>, fullScan: boolean, scannedPaths: string[]): void {
+    if (fullScan) this.data.scanCache = {};
+    for (const path of scannedPaths) delete this.data.scanCache[path];
+    for (const [path, local] of localFiles) {
+      this.data.scanCache[path] = {
+        hash: local.hash,
+        size: local.size,
+        modifiedAt: local.modifiedAt
+      };
+    }
+  }
+
+  private acknowledgePendingPaths(snapshot: Record<string, number>): void {
+    for (const [path, queuedAt] of Object.entries(snapshot)) {
+      if (this.data.pendingPaths[path] === queuedAt) delete this.data.pendingPaths[path];
     }
   }
 }

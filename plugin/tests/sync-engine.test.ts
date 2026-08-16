@@ -78,7 +78,12 @@ describe("SyncEngine snapshot reconciliation", () => {
       filterFingerprint: "old-filter",
       initialSyncCompleted: true,
       pendingInitialSyncMode: null,
-      files: {}
+      files: {},
+      scanCache: {},
+      pendingPaths: {},
+      needsFullScan: true,
+      lastFullScanAt: 0,
+      lastIntegrityScanAt: 0
     };
     let persistCount = 0;
     const engine = new SyncEngine(vault, data, client, scanner, async () => {
@@ -174,7 +179,12 @@ describe("SyncEngine snapshot reconciliation", () => {
       filterFingerprint: "",
       initialSyncCompleted: false,
       pendingInitialSyncMode: "local",
-      files: {}
+      files: {},
+      scanCache: {},
+      pendingPaths: {},
+      needsFullScan: true,
+      lastFullScanAt: 0,
+      lastIntegrityScanAt: 0
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -226,7 +236,12 @@ describe("SyncEngine snapshot reconciliation", () => {
       filterFingerprint: "",
       initialSyncCompleted: false,
       pendingInitialSyncMode: "remote",
-      files: {}
+      files: {},
+      scanCache: {},
+      pendingPaths: {},
+      needsFullScan: true,
+      lastFullScanAt: 0,
+      lastIntegrityScanAt: 0
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -238,6 +253,112 @@ describe("SyncEngine snapshot reconciliation", () => {
     expect(summary.conflicts).toBe(1);
     expect(summary.uploaded).toBe(1);
     expect(data.initialSyncCompleted).toBe(true);
+  });
+
+  it("only propagates deletion for a path recorded by the persistent event queue", async () => {
+    const unrelatedBytes = bytes("unrelated");
+    const unrelatedHash = await sha256(unrelatedBytes);
+    const deletedHash = await sha256(bytes("deleted"));
+    const files = new Map<string, ArrayBuffer>([["unrelated.md", unrelatedBytes]]);
+    const adapter = createMemoryAdapter(files);
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+    const now = Date.now();
+    const deletedPaths: string[] = [];
+    const client = {
+      status: async () => ({ latest_revision: 2, max_upload_bytes: 1024 }),
+      deleteFile: async (path: string, baseRevision: number) => {
+        deletedPaths.push(path);
+        expect(baseRevision).toBe(1);
+        return {
+          changed: true,
+          change: {
+            revision: 3,
+            path,
+            size: 0,
+            modified_at: now,
+            deleted: true,
+            device_id: "local"
+          }
+        };
+      },
+      putFile: async () => {
+        throw new Error("Unexpected upload");
+      },
+      listChanges: async () => ({ changes: [], cursor: 3, has_more: false })
+    } as unknown as SyncApiClient;
+    const data: PersistedData = {
+      schemaVersion: 3,
+      settings: testSettings(),
+      cursor: 2,
+      filterFingerprint: scanner.filterFingerprint(),
+      initialSyncCompleted: true,
+      pendingInitialSyncMode: null,
+      files: {
+        "deleted.md": { hash: deletedHash, revision: 1, size: 7, modifiedAt: 1, deleted: false },
+        "unrelated.md": { hash: unrelatedHash, revision: 2, size: 9, modifiedAt: 1, deleted: false }
+      },
+      scanCache: {
+        "deleted.md": { hash: deletedHash, size: 7, modifiedAt: 1 },
+        "unrelated.md": { hash: unrelatedHash, size: 9, modifiedAt: 1 }
+      },
+      pendingPaths: { "deleted.md": 10 },
+      needsFullScan: false,
+      lastFullScanAt: now,
+      lastIntegrityScanAt: now
+    };
+    const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
+
+    const summary = await engine.run();
+
+    expect(deletedPaths).toEqual(["deleted.md"]);
+    expect(data.files["deleted.md"]?.deleted).toBe(true);
+    expect(data.files["unrelated.md"]?.deleted).toBe(false);
+    expect(files.has("unrelated.md")).toBe(true);
+    expect(data.pendingPaths).toEqual({});
+    expect(summary.deletedRemote).toBe(1);
+  });
+
+  it("does not acknowledge a newer event for the same path", async () => {
+    const content = bytes("content");
+    const hash = await sha256(content);
+    const files = new Map<string, ArrayBuffer>([["note.md", content]]);
+    const adapter = createMemoryAdapter(files);
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+    const now = Date.now();
+    const data: PersistedData = {
+      schemaVersion: 3,
+      settings: testSettings(),
+      cursor: 1,
+      filterFingerprint: scanner.filterFingerprint(),
+      initialSyncCompleted: true,
+      pendingInitialSyncMode: null,
+      files: { "note.md": { hash, revision: 1, size: 7, modifiedAt: 1, deleted: false } },
+      scanCache: { "note.md": { hash, size: 7, modifiedAt: 1 } },
+      pendingPaths: { "note.md": 10 },
+      needsFullScan: false,
+      lastFullScanAt: now,
+      lastIntegrityScanAt: now
+    };
+    const client = {
+      status: async () => ({ latest_revision: 1, max_upload_bytes: 1024 }),
+      putFile: async () => {
+        throw new Error("Unexpected upload");
+      },
+      deleteFile: async () => {
+        throw new Error("Unexpected delete");
+      },
+      listChanges: async () => {
+        data.pendingPaths["note.md"] = 11;
+        return { changes: [], cursor: 1, has_more: false };
+      }
+    } as unknown as SyncApiClient;
+    const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
+
+    await engine.run();
+
+    expect(data.pendingPaths).toEqual({ "note.md": 11 });
   });
 });
 

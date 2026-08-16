@@ -12,6 +12,9 @@ describe("migrateData", () => {
     expect(data.initialSyncCompleted).toBe(false);
     expect(data.pendingInitialSyncMode).toBeNull();
     expect(data.filterFingerprint).toBe("");
+    expect(data.needsFullScan).toBe(true);
+    expect(data.scanCache).toEqual({});
+    expect(data.pendingPaths).toEqual({});
   });
 
   it("keeps an existing schema-v1 installation initialized and schedules a snapshot", () => {
@@ -31,6 +34,7 @@ describe("migrateData", () => {
     expect(data.filterFingerprint).toBe("");
     expect(data.cursor).toBe(12);
     expect(data.files["note.md"]?.revision).toBe(12);
+    expect(data.needsFullScan).toBe(true);
   });
 
   it("retains a pending approved initialization mode after a failed run", () => {

@@ -22,6 +22,12 @@ export interface FileState {
   deleted: boolean;
 }
 
+export interface ScanCacheEntry {
+  hash: string;
+  size: number;
+  modifiedAt: number;
+}
+
 export interface PersistedData {
   schemaVersion: number;
   settings: PluginSettings;
@@ -30,6 +36,11 @@ export interface PersistedData {
   initialSyncCompleted: boolean;
   pendingInitialSyncMode: InitialSyncMode | null;
   files: Record<string, FileState>;
+  scanCache: Record<string, ScanCacheEntry>;
+  pendingPaths: Record<string, number>;
+  needsFullScan: boolean;
+  lastFullScanAt: number;
+  lastIntegrityScanAt: number;
 }
 
 export type InitialSyncMode = "merge" | "remote" | "local";
