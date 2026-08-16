@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.1.0",
+    [string]$Version,
     [switch]$SkipInstall
 )
 
@@ -8,9 +8,26 @@ $ErrorActionPreference = "Stop"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $distPath = Join-Path $repoRoot "dist"
 $pluginPath = Join-Path $repoRoot "plugin"
+$rootManifestPath = Join-Path $repoRoot "manifest.json"
+$pluginManifestPath = Join-Path $pluginPath "manifest.json"
 $serverOutput = Join-Path $distPath "server\obsidian-sync-server.exe"
-$pluginOutput = Join-Path $distPath "plugin\obsidian-sync-tunnel"
-$pluginZip = Join-Path $distPath "obsidian-sync-tunnel-plugin-$Version.zip"
+$pluginOutput = Join-Path $distPath "plugin\sync-tunnel"
+$releaseOutput = Join-Path $distPath "release"
+
+if (-not (Test-Path -LiteralPath $rootManifestPath -PathType Leaf)) {
+    throw "Missing root manifest.json"
+}
+if ((Get-FileHash -LiteralPath $rootManifestPath).Hash -ne (Get-FileHash -LiteralPath $pluginManifestPath).Hash) {
+    throw "Root manifest.json and plugin\manifest.json must be identical"
+}
+$manifest = Get-Content -LiteralPath $rootManifestPath -Raw | ConvertFrom-Json
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = [string]$manifest.version
+}
+if ($Version -ne [string]$manifest.version) {
+    throw "Build version '$Version' does not match manifest version '$($manifest.version)'"
+}
+$pluginZip = Join-Path $distPath "sync-tunnel-plugin-$Version.zip"
 
 if (Test-Path -LiteralPath $distPath) {
     $resolvedDist = [System.IO.Path]::GetFullPath($distPath)
@@ -19,7 +36,7 @@ if (Test-Path -LiteralPath $distPath) {
     }
     Remove-Item -LiteralPath $resolvedDist -Recurse -Force
 }
-New-Item -ItemType Directory -Path (Split-Path $serverOutput), $pluginOutput -Force | Out-Null
+New-Item -ItemType Directory -Path (Split-Path $serverOutput), $pluginOutput, $releaseOutput -Force | Out-Null
 
 Push-Location $repoRoot
 try {
@@ -48,11 +65,23 @@ try {
 }
 
 Copy-Item -LiteralPath (Join-Path $pluginPath "main.js") -Destination $pluginOutput
-Copy-Item -LiteralPath (Join-Path $pluginPath "manifest.json") -Destination $pluginOutput
+Copy-Item -LiteralPath $rootManifestPath -Destination $pluginOutput
 Copy-Item -LiteralPath (Join-Path $pluginPath "styles.css") -Destination $pluginOutput
+Copy-Item -LiteralPath (Join-Path $pluginPath "main.js") -Destination $releaseOutput
+Copy-Item -LiteralPath $rootManifestPath -Destination $releaseOutput
+Copy-Item -LiteralPath (Join-Path $pluginPath "styles.css") -Destination $releaseOutput
 Compress-Archive -Path (Join-Path $pluginOutput "*") -DestinationPath $pluginZip -CompressionLevel Optimal
+
+Push-Location $repoRoot
+try {
+    & node .\scripts\verify-plugin-release.mjs $Version --artifacts
+    if ($LASTEXITCODE -ne 0) { throw "Plugin release validation failed" }
+} finally {
+    Pop-Location
+}
 
 Write-Host "Build complete"
 Write-Host "  Server: $serverOutput"
 Write-Host "  Plugin: $pluginOutput"
+Write-Host "  GitHub Release assets: $releaseOutput"
 Write-Host "  Plugin ZIP: $pluginZip"

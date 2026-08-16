@@ -1,5 +1,5 @@
 {
-  "name": "obsidian-sync-tunnel",
+  "name": "sync-tunnel",
   "version": "0.1.0",
   "description": "Self-hosted full-vault synchronization through a Go server and Cloudflare Tunnel",
   "private": true,

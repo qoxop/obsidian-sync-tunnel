@@ -56,7 +56,11 @@ export default class SyncTunnelPlugin extends Plugin {
     try {
       const client = await this.createClient();
       const configDirectory = this.app.vault.configDir;
-      const protectedPaths = [`${configDirectory}/plugins/${this.manifest.id}/data.json`];
+      const protectedPaths = [
+        `${configDirectory}/plugins/${this.manifest.id}/data.json`,
+        // Protect settings left by pre-release builds that used the old plugin ID.
+        `${configDirectory}/plugins/obsidian-sync-tunnel/data.json`
+      ];
       const scanner = new VaultScanner(this.app.vault, this.data.settings.excludedPatterns, protectedPaths);
       const engine = new SyncEngine(this.app.vault, this.data, client, scanner, () => this.savePluginData());
       this.setStatus("同步中…");

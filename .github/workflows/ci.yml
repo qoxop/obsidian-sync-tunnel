@@ -21,6 +21,8 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: plugin/package-lock.json
+      - name: Validate plugin release metadata
+        run: node scripts/verify-plugin-release.mjs
       - name: Go test
         run: go test ./...
       - name: Go vet

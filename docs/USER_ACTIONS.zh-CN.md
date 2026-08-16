@@ -147,12 +147,12 @@ Invoke-RestMethod https://sync.example.com/healthz
 .\scripts\install-plugin.ps1 -VaultPath '你的测试 Vault 路径'
 ```
 
-也可以手工把以下三个文件复制到 `<Vault>\.obsidian\plugins\obsidian-sync-tunnel`：
+也可以手工把以下三个文件复制到 `<Vault>\.obsidian\plugins\sync-tunnel`：
 
 ```text
-dist\plugin\obsidian-sync-tunnel\main.js
-dist\plugin\obsidian-sync-tunnel\manifest.json
-dist\plugin\obsidian-sync-tunnel\styles.css
+dist\plugin\sync-tunnel\main.js
+dist\plugin\sync-tunnel\manifest.json
+dist\plugin\sync-tunnel\styles.css
 ```
 
 启动或重载 Obsidian，在 **Settings > Community plugins** 中启用 Sync Tunnel。开发和首次同步必须使用专用测试 Vault：[Obsidian 官方插件开发指引](https://docs.obsidian.md/Plugins/Getting%20started/Build%20a%20plugin)。

@@ -10,7 +10,12 @@
 2. 阅读[Docker 部署说明](docs/DOCKER_DEPLOYMENT.zh-CN.md)；
 3. 按[用户配合操作清单](docs/USER_ACTIONS.zh-CN.md)准备测试 Vault、Docker Desktop 和 Cloudflare；
 4. 运行 `scripts/docker-init.ps1` 和 `scripts/docker-up.ps1`；
-4. 在两个测试 Vault 完成人工验收矩阵后，再考虑真实数据。
+5. 如需在其他电脑在线安装插件，阅读[GitHub + BRAT 发布指引](docs/GITHUB_RELEASE.zh-CN.md)；
+6. 在两个测试 Vault 完成人工验收矩阵后，再考虑真实数据。
+
+## 通过 GitHub 安装插件
+
+插件不必提交到 Obsidian 官方市场。仓库推送 `x.y.z` 标签后，GitHub Actions 会自动构建 Release；其他电脑安装 BRAT 后添加本仓库地址即可安装和更新。Release 发布、版本升级和旧测试版迁移步骤见[GitHub + BRAT 发布指引](docs/GITHUB_RELEASE.zh-CN.md)。
 
 ## Docker 部署速览
 

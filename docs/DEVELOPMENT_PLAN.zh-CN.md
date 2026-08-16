@@ -125,7 +125,7 @@ Markdown 和图片使用完全相同的协议，因此不会因为编码、换�
 另有一个不可取消的设备本地路径：
 
 ```text
-<vault.configDir>/plugins/obsidian-sync-tunnel/data.json
+<vault.configDir>/plugins/sync-tunnel/data.json
 ```
 
 用户可以在设置中增加 glob。`.obsidian/workspace*.json` 默认仍同步；若设备布局差异很大，建议用户自行排除。
