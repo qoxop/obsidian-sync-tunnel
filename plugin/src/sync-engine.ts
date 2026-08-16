@@ -1,4 +1,4 @@
-import { DataAdapter, Vault } from "obsidian";
+import { DataAdapter, FileSystemAdapter, Platform, Vault } from "obsidian";
 
 import { ApiError, SyncApiClient } from "./api-client";
 import { sha256 } from "./hash";
@@ -294,11 +294,7 @@ export class SyncEngine {
 
     if (!change.blob_hash) throw new Error(`Server change ${change.revision} has no blob hash`);
     const download = await this.stageDownload(change);
-    const content = await this.downloadRemoteContent(change.blob_hash, change.size);
-    if (content.byteLength !== change.size || await sha256(content) !== change.blob_hash) {
-      throw new Error(`Downloaded content verification failed for ${change.path}`);
-    }
-    await this.adapter.writeBinary(download.tempPath, content, { ctime: change.modified_at, mtime: change.modified_at });
+    await this.downloadToTemporaryFile(change.blob_hash, change.size, download);
     if (!await this.fileMatches(download.tempPath, download.hash, download.size)) {
       throw new Error(`Temporary download verification failed for ${change.path}`);
     }
@@ -674,15 +670,83 @@ export class SyncEngine {
     return this.client.commitManifest(path, baseRevision, modifiedAt, hash, content.byteLength, chunks, operationId);
   }
 
-  private async downloadRemoteContent(hash: string, expectedSize: number): Promise<ArrayBuffer> {
-    if (!this.supportsChunkDownload || expectedSize <= this.chunkSize) return this.client.downloadBlob(hash);
-    const manifest = await this.client.findManifest(hash);
-    if (!manifest) return this.client.downloadBlob(hash);
+  private async downloadToTemporaryFile(hash: string, expectedSize: number, download: InboxDownload): Promise<void> {
+    const manifest = this.supportsChunkDownload && expectedSize > this.chunkSize
+      ? await this.client.findManifest(hash)
+      : null;
+    if (manifest && Platform.isDesktopApp && this.adapter instanceof FileSystemAdapter) {
+      await this.streamManifestToDesktopFile(hash, expectedSize, manifest, download);
+      return;
+    }
+    const content = manifest
+      ? await this.assembleManifestInMemory(expectedSize, manifest)
+      : await this.client.downloadBlob(hash);
+    if (content.byteLength !== expectedSize || await sha256(content) !== hash) {
+      throw new Error(`Downloaded content verification failed for ${download.path}`);
+    }
+    await this.adapter.writeBinary(download.tempPath, content, { ctime: download.modifiedAt, mtime: download.modifiedAt });
+  }
+
+  private async assembleManifestInMemory(
+    expectedSize: number,
+    manifest: { size: number; chunks: ChunkRef[] }
+  ): Promise<ArrayBuffer> {
+    this.validateManifest(expectedSize, manifest);
+    const result = new Uint8Array(expectedSize);
+    let offset = 0;
+    for (const chunk of manifest.chunks) {
+      const data = await this.downloadVerifiedChunk(chunk);
+      result.set(new Uint8Array(data), offset);
+      offset += chunk.size;
+    }
+    return result.buffer;
+  }
+
+  private async streamManifestToDesktopFile(
+    expectedHash: string,
+    expectedSize: number,
+    manifest: { size: number; chunks: ChunkRef[] },
+    download: InboxDownload
+  ): Promise<void> {
+    this.validateManifest(expectedSize, manifest);
+    const adapter = this.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) throw new Error("Desktop streaming requires a filesystem adapter");
+    const [{ open }, { createHash }] = await Promise.all([
+      import("node:fs/promises"),
+      import("node:crypto")
+    ]);
+    const handle = await open(adapter.getFullPath(download.tempPath), "w", 0o600);
+    const digest = createHash("sha256");
+    let written = 0;
+    try {
+      for (const chunk of manifest.chunks) {
+        const data = await this.downloadVerifiedChunk(chunk);
+        const bytes = new Uint8Array(data);
+        let chunkOffset = 0;
+        while (chunkOffset < bytes.byteLength) {
+          const result = await handle.write(bytes, chunkOffset, bytes.byteLength - chunkOffset);
+          if (result.bytesWritten < 1) throw new Error("Could not make progress while writing a downloaded Chunk");
+          chunkOffset += result.bytesWritten;
+        }
+        digest.update(bytes);
+        written += bytes.byteLength;
+      }
+      const modified = new Date(download.modifiedAt);
+      await handle.utimes(modified, modified);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    if (written !== expectedSize || digest.digest("hex") !== expectedHash) {
+      throw new Error(`Streamed download verification failed for ${download.path}`);
+    }
+  }
+
+  private validateManifest(expectedSize: number, manifest: { size: number; chunks: ChunkRef[] }): void {
     if (manifest.size !== expectedSize) throw new Error("Server Manifest size does not match the file change");
     if (manifest.chunks.length !== Math.ceil(expectedSize / this.chunkSize)) {
       throw new Error("Server Manifest has an invalid Chunk count");
     }
-    const result = new Uint8Array(expectedSize);
     let offset = 0;
     for (const chunk of manifest.chunks) {
       if (chunk.size < 1 || chunk.size > this.chunkSize || offset + chunk.size > expectedSize) {
@@ -691,15 +755,17 @@ export class SyncEngine {
       if (offset + chunk.size < expectedSize && chunk.size !== this.chunkSize) {
         throw new Error("Server returned a non-fixed intermediate Chunk");
       }
-      const data = await this.client.downloadChunk(chunk.hash);
-      if (data.byteLength !== chunk.size || await sha256(data) !== chunk.hash) {
-        throw new Error("Downloaded Chunk verification failed");
-      }
-      result.set(new Uint8Array(data), offset);
       offset += chunk.size;
     }
     if (offset !== expectedSize) throw new Error("Chunk Manifest does not cover the file size");
-    return result.buffer;
+  }
+
+  private async downloadVerifiedChunk(chunk: ChunkRef): Promise<ArrayBuffer> {
+    const data = await this.client.downloadChunk(chunk.hash);
+    if (data.byteLength !== chunk.size || await sha256(data) !== chunk.hash) {
+      throw new Error("Downloaded Chunk verification failed");
+    }
+    return data;
   }
 
   private async stageDownload(change: Change): Promise<InboxDownload> {
@@ -809,7 +875,21 @@ export class SyncEngine {
   private async fileMatches(path: string, expectedHash: string, expectedSize: number): Promise<boolean> {
     const stat = await this.adapter.stat(path);
     if (!stat || stat.type !== "file" || stat.size !== expectedSize) return false;
-    return await sha256(await this.adapter.readBinary(path)) === expectedHash;
+    return await this.hashLocalFile(path) === expectedHash;
+  }
+
+  private async hashLocalFile(path: string): Promise<string> {
+    const adapter = this.adapter;
+    if (!Platform.isDesktopApp || !(adapter instanceof FileSystemAdapter)) {
+      return sha256(await this.adapter.readBinary(path));
+    }
+    const [{ createReadStream }, { createHash }] = await Promise.all([
+      import("node:fs"),
+      import("node:crypto")
+    ]);
+    const digest = createHash("sha256");
+    for await (const chunk of createReadStream(adapter.getFullPath(path))) digest.update(chunk);
+    return digest.digest("hex");
   }
 }
 

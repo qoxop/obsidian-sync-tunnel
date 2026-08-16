@@ -13,6 +13,7 @@ All notable changes to Sync Tunnel are documented here. The project follows Sema
 - Persistent download inbox with size and SHA-256 verification, same-directory temporary files, backup-based replacement, and restart recovery.
 - Fixed-size content-addressed Chunk storage, missing-Chunk queries, Manifest commits, and capability-negotiated Chunk upload/download.
 - Transactional high-confidence rename operation with source tombstone, destination change, and post-restart result recovery.
+- Desktop Chunk downloads stream directly to the temporary file and use incremental SHA-256 verification.
 
 ### Changed
 
