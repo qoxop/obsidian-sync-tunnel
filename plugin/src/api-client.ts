@@ -1,6 +1,6 @@
 import { requestUrl, RequestUrlParam, RequestUrlResponse } from "obsidian";
 
-import { Change, ChangesResponse, ChunkRef, MutationResponse, ServerInfoResponse, SnapshotResponse, StatusResponse } from "./types";
+import { BatchDeleteItem, BatchMutationResponse, Change, ChangesResponse, ChunkRef, MutationResponse, ServerInfoResponse, SnapshotResponse, StatusResponse } from "./types";
 
 interface ClientOptions {
   serverUrl: string;
@@ -123,6 +123,19 @@ export class SyncApiClient {
       contentType: "application/json",
       headers: this.mutationHeaders(operationId, baseRevision, modifiedAt),
       body: JSON.stringify({ from, to })
+    });
+  }
+
+  async deleteFiles(items: BatchDeleteItem[], operationId: string): Promise<BatchMutationResponse> {
+    return this.jsonRequest<BatchMutationResponse>({
+      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/batch/delete`,
+      method: "POST",
+      contentType: "application/json",
+      headers: {
+        "X-Device-ID": this.options.deviceId,
+        "X-Operation-ID": operationId
+      },
+      body: JSON.stringify({ items })
     });
   }
 

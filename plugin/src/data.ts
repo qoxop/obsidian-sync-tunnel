@@ -1,6 +1,6 @@
 import type { InitialSyncMode, PersistedData, PluginSettings, SyncProfile } from "./types";
 
-export const DATA_SCHEMA_VERSION = 7;
+export const DATA_SCHEMA_VERSION = 8;
 
 export function migrateData(raw: unknown, generatedDeviceId = generateDeviceId()): PersistedData {
   const parsed = isRecord(raw) ? raw : {};
@@ -79,7 +79,7 @@ function sanitizeOutbox(value: Record<string, unknown>): PersistedData["outbox"]
   const result: PersistedData["outbox"] = {};
   for (const [operationId, raw] of Object.entries(value)) {
     if (!isRecord(raw) || raw.operationId !== operationId) continue;
-    if (raw.kind !== "put" && raw.kind !== "delete" && raw.kind !== "rename") continue;
+    if (raw.kind !== "put" && raw.kind !== "delete" && raw.kind !== "rename" && raw.kind !== "batch-delete") continue;
     if (typeof raw.path !== "string" || typeof raw.hash !== "string") continue;
     const numbers = [raw.baseRevision, raw.modifiedAt, raw.size, raw.createdAt];
     if (!numbers.every((item) => typeof item === "number" && Number.isFinite(item) && item >= 0)) continue;

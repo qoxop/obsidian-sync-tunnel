@@ -36,7 +36,7 @@ if ($health.status -ne "ok") { throw "Health check failed" }
 $serverInfo = Invoke-RestMethod -Uri "$ServerUrl/api/v2/server-info" -Headers @{ Authorization = "Bearer $Token" }
 if ($serverInfo.protocol.max -lt 2 -or $serverInfo.capabilities -notcontains "snapshot-v1" -or
     $serverInfo.capabilities -notcontains "operation-id" -or $serverInfo.capabilities -notcontains "chunk-upload-v1" -or
-    $serverInfo.capabilities -notcontains "rename-v1") {
+    $serverInfo.capabilities -notcontains "rename-v1" -or $serverInfo.capabilities -notcontains "batch-delete-v1") {
     throw "Server does not advertise the required Protocol v2 capabilities"
 }
 $put = Invoke-RestMethod -Method Put -Uri "$base/file?path=$encodedPath" -Headers $headers -ContentType "application/octet-stream" -Body $data
@@ -97,9 +97,14 @@ $deleteHeaders = @{
     Authorization = "Bearer $Token"
     "X-Device-ID" = "smoke-device"
     "X-Operation-ID" = [Guid]::NewGuid().ToString()
-    "X-Base-Revision" = $put.change.revision.ToString()
-    "X-Modified-At" = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString()
 }
-$deleted = Invoke-RestMethod -Method Delete -Uri "$base/file?path=$encodedPath" -Headers $deleteHeaders
-if (-not $deleted.changed -or -not $deleted.change.deleted) { throw "Delete tombstone failed" }
+$deleteTime = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$batchDeleteBody = @{ items = @(
+    @{ path = $path; base_revision = $put.change.revision; modified_at = $deleteTime },
+    @{ path = $renamedPath; base_revision = $rename.change.revision; modified_at = $deleteTime }
+) } | ConvertTo-Json -Compress -Depth 4
+$deleted = Invoke-RestMethod -Method Post -Uri "$ServerUrl/api/v2/vaults/$vaultId/batch/delete" -Headers $deleteHeaders -ContentType "application/json" -Body $batchDeleteBody
+if (-not $deleted.changed -or @($deleted.changes).Count -ne 2 -or @($deleted.changes | Where-Object { -not $_.deleted }).Count -ne 0) {
+    throw "Batch delete tombstones failed"
+}
 Write-Host "Smoke test passed for temporary vault $vaultId"

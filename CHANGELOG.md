@@ -14,6 +14,7 @@ All notable changes to Sync Tunnel are documented here. The project follows Sema
 - Fixed-size content-addressed Chunk storage, missing-Chunk queries, Manifest commits, and capability-negotiated Chunk upload/download.
 - Transactional high-confidence rename operation with source tombstone, destination change, and post-restart result recovery.
 - Desktop Chunk downloads stream directly to the temporary file and use incremental SHA-256 verification.
+- Atomic batch deletion for up to 100 paths with consecutive tombstone revisions and all-or-nothing conflict handling.
 
 ### Changed
 

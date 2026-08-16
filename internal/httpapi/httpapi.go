@@ -38,6 +38,7 @@ func New(db *store.Store, token string, maxUploadBytes int64, version string, lo
 	mux.HandleFunc("GET /api/v2/vaults/{vault}/manifests/{hash}", api.getManifest)
 	mux.HandleFunc("POST /api/v2/vaults/{vault}/files/commit", api.commitManifest)
 	mux.HandleFunc("POST /api/v2/vaults/{vault}/rename", api.renameFile)
+	mux.HandleFunc("POST /api/v2/vaults/{vault}/batch/delete", api.batchDelete)
 	mux.HandleFunc("GET /api/v1/vaults/{vault}/status", api.status)
 	mux.HandleFunc("GET /api/v1/vaults/{vault}/changes", api.changes)
 	mux.HandleFunc("GET /api/v1/vaults/{vault}/blobs/{hash}", api.blob)
@@ -59,7 +60,7 @@ func (a *API) serverInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"server_version": a.version,
 		"protocol":       map[string]int{"min": 1, "max": 2},
-		"capabilities":   []string{"snapshot-v1", "operation-id", "whole-file-v1", "chunk-upload-v1", "chunk-download-v1", "rename-v1"},
+		"capabilities":   []string{"snapshot-v1", "operation-id", "whole-file-v1", "chunk-upload-v1", "chunk-download-v1", "rename-v1", "batch-delete-v1"},
 		"database":       map[string]int{"schema_version": schemaVersion},
 		"limits": map[string]any{
 			"max_upload_bytes":  a.maxUploadBytes,

@@ -3,7 +3,7 @@ import { DataAdapter, FileSystemAdapter, Platform, Vault } from "obsidian";
 import { ApiError, SyncApiClient } from "./api-client";
 import { sha256 } from "./hash";
 import { conflictPath, pathRequiresObsidianRestart } from "./path";
-import { Change, ChunkRef, FileState, InboxDownload, InitialSyncMode, LocalFile, OutboxOperation, PersistedData, SyncSummary } from "./types";
+import { BatchDeleteItem, BatchMutationResponse, Change, ChunkRef, FileState, InboxDownload, InitialSyncMode, LocalFile, MutationResponse, OutboxOperation, PersistedData, SyncSummary } from "./types";
 import { VaultScanner } from "./vault-scanner";
 
 const FULL_SCAN_INTERVAL_MS = 60 * 60 * 1000;
@@ -15,6 +15,7 @@ export class SyncEngine {
   private supportsChunkUpload = false;
   private supportsChunkDownload = false;
   private supportsRename = false;
+  private supportsBatchDelete = false;
   private chunkSize = 4 * 1024 * 1024;
   private chunkConcurrency = 3;
   private maxChunkQuery = 1000;
@@ -53,6 +54,7 @@ export class SyncEngine {
       this.supportsChunkUpload = this.supportsOperationIDs && serverInfo.capabilities.includes("chunk-upload-v1");
       this.supportsChunkDownload = serverInfo.capabilities.includes("chunk-download-v1");
       this.supportsRename = this.supportsOperationIDs && serverInfo.capabilities.includes("rename-v1");
+      this.supportsBatchDelete = this.supportsOperationIDs && serverInfo.capabilities.includes("batch-delete-v1");
       this.chunkSize = positiveInteger(serverInfo.limits?.chunk_size, this.chunkSize);
       this.chunkConcurrency = Math.min(8, positiveInteger(serverInfo.limits?.chunk_concurrency, this.chunkConcurrency));
       this.maxChunkQuery = Math.min(1000, positiveInteger(serverInfo.limits?.max_chunk_query, this.maxChunkQuery));
@@ -222,10 +224,20 @@ export class SyncEngine {
       }
     }
 
-    for (const [path, previous] of Object.entries(this.data.files)) {
-      if (previous.deleted || localFiles.has(path) || this.scanner.isExcluded(path)) continue;
-      if (this.deferredRemotePaths.has(path)) continue;
-      if (deletionCandidates && !deletionCandidates.has(path)) continue;
+    const deletions = Object.entries(this.data.files).filter(([path, previous]) => {
+      if (previous.deleted || localFiles.has(path) || this.scanner.isExcluded(path)) return false;
+      if (this.deferredRemotePaths.has(path)) return false;
+      if (deletionCandidates && !deletionCandidates.has(path)) return false;
+      return true;
+    });
+    if (this.supportsBatchDelete && deletions.length > 1) {
+      const completed = await this.pushBatchDeletes(deletions, summary);
+      if (completed) {
+        await this.persist();
+        return;
+      }
+    }
+    for (const [path, previous] of deletions) {
       const modifiedAt = Date.now();
       const operationID = await this.stageOperation("delete", path, previous.revision, modifiedAt, "", 0);
       try {
@@ -356,7 +368,8 @@ export class SyncEngine {
     hash: string,
     size: number,
     chunks?: ChunkRef[],
-    sourcePath?: string
+    sourcePath?: string,
+    batchDeletes?: BatchDeleteItem[]
   ): Promise<string | undefined> {
     if (!this.supportsOperationIDs) return undefined;
     const operationId = crypto.randomUUID();
@@ -371,7 +384,8 @@ export class SyncEngine {
       createdAt: Date.now(),
       transport: chunks ? "chunks" : "whole",
       chunks,
-      sourcePath
+      sourcePath,
+      batchDeletes
     };
     await this.persist();
     return operationId;
@@ -400,11 +414,19 @@ export class SyncEngine {
           await this.acceptRecoveredRename(operation, committed, summary);
           continue;
         }
+        if (operation.kind === "batch-delete") {
+          await this.acceptRecoveredBatchDelete(operation, committed, summary);
+          continue;
+        }
         await this.acceptRecoveredOperation(operation, committed.change, committed.changed, summary);
         continue;
       }
       if (operation.kind === "rename") {
         await this.resumeRenameOperation(operation, summary);
+        continue;
+      }
+      if (operation.kind === "batch-delete") {
+        await this.resumeBatchDeleteOperation(operation, summary);
         continue;
       }
       if (this.scanner.isExcluded(operation.path)) {
@@ -503,6 +525,108 @@ export class SyncEngine {
 
   private queuePath(path: string): void {
     this.data.pendingPaths[path] = Math.max(Date.now(), (this.data.pendingPaths[path] ?? 0) + 1);
+  }
+
+  private async pushBatchDeletes(
+    deletions: Array<[string, FileState]>,
+    summary: SyncSummary
+  ): Promise<boolean> {
+    const now = Date.now();
+    const items: BatchDeleteItem[] = deletions.slice(0, 100).map(([path, previous]) => ({
+      path,
+      base_revision: previous.revision,
+      modified_at: now
+    }));
+    const first = items[0];
+    if (!first) return false;
+    const operationId = await this.stageOperation(
+      "batch-delete",
+      first.path,
+      first.base_revision,
+      now,
+      "",
+      0,
+      undefined,
+      undefined,
+      items
+    );
+    if (!operationId) return false;
+    try {
+      const result = await this.client.deleteFiles(items, operationId);
+      await this.acceptBatchDeleteResult(operationId, items, result, summary);
+      // More than 100 candidates are handled by the ordinary loop below.
+      for (const item of items) {
+        const index = deletions.findIndex(([path]) => path === item.path);
+        if (index >= 0) deletions.splice(index, 1);
+      }
+      return deletions.length === 0;
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== "revision_conflict") throw error;
+      await this.discardOperation(operationId);
+      return false;
+    }
+  }
+
+  private async resumeBatchDeleteOperation(operation: OutboxOperation, summary: SyncSummary): Promise<void> {
+    const items = operation.batchDeletes;
+    if (!items || items.length === 0) {
+      await this.abandonUncommittedOperation(operation);
+      return;
+    }
+    for (const item of items) {
+      if (await this.adapter.exists(item.path)) {
+        await this.abandonBatchDeleteOperation(operation, false);
+        return;
+      }
+    }
+    try {
+      const result = await this.client.deleteFiles(items, operation.operationId);
+      await this.acceptBatchDeleteResult(operation.operationId, items, result, summary);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== "revision_conflict") throw error;
+      await this.abandonBatchDeleteOperation(operation, true);
+    }
+  }
+
+  private async acceptRecoveredBatchDelete(
+    operation: OutboxOperation,
+    result: MutationResponse,
+    summary: SyncSummary
+  ): Promise<void> {
+    if (!result || !operation.batchDeletes) throw new Error("Recovered batch delete result is incomplete");
+    await this.acceptBatchDeleteResult(operation.operationId, operation.batchDeletes, {
+      changes: [result.change, ...(result.related_changes ?? [])],
+      changed: result.changed
+    }, summary);
+  }
+
+  private async acceptBatchDeleteResult(
+    operationId: string,
+    items: BatchDeleteItem[],
+    result: BatchMutationResponse,
+    summary: SyncSummary
+  ): Promise<void> {
+    const expected = new Set(items.map((item) => item.path));
+    if (result.changes.length !== expected.size || result.changes.some((change) => !change.deleted || !expected.has(change.path))) {
+      throw new Error("Server returned an incomplete batch delete result");
+    }
+    for (const change of result.changes) {
+      this.data.files[change.path] = stateFromChange(change);
+      delete this.data.scanCache[change.path];
+    }
+    if (result.changed) summary.deletedRemote += result.changes.length;
+    else summary.skipped += result.changes.length;
+    await this.completeOperation(operationId);
+    await this.persist();
+  }
+
+  private async abandonBatchDeleteOperation(operation: OutboxOperation, deferRemote: boolean): Promise<void> {
+    delete this.data.outbox[operation.operationId];
+    for (const item of operation.batchDeletes ?? []) {
+      this.queuePath(item.path);
+      if (deferRemote) this.deferredRemotePaths.add(item.path);
+    }
+    await this.persist();
   }
 
   private async processPendingRenames(summary: SyncSummary): Promise<void> {

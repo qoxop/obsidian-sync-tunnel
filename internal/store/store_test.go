@@ -214,6 +214,59 @@ func TestRenameIsAtomicAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestBatchDeleteIsAtomicAndIdempotent(t *testing.T) {
+	t.Parallel()
+	db := openTestStore(t)
+	ctx := context.Background()
+	aData := []byte("a")
+	bData := []byte("b")
+	a, _, err := db.Put(ctx, "vault-a", "a.md", "desktop", 0, 1, Hash(aData), aData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := db.Put(ctx, "vault-a", "b.md", "desktop", 0, 1, Hash(bData), bData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationID := "11111111-1111-4111-8111-111111111111"
+	items := []BatchDeleteItem{
+		{Path: "b.md", BaseRevision: b.Revision, ModifiedAt: 3},
+		{Path: "a.md", BaseRevision: a.Revision, ModifiedAt: 2},
+	}
+	changes, changed, err := db.BatchDeleteWithOperation(ctx, "vault-a", "desktop", operationID, items)
+	if err != nil || !changed || len(changes) != 2 || changes[0].Path != "a.md" || !changes[0].Deleted || changes[1].Revision != changes[0].Revision+1 {
+		t.Fatalf("batch delete: changes=%+v changed=%v err=%v", changes, changed, err)
+	}
+	retried, changed, err := db.BatchDeleteWithOperation(ctx, "vault-a", "desktop", operationID, items)
+	if err != nil || !changed || len(retried) != 2 || retried[0].Revision != changes[0].Revision || retried[1].Revision != changes[1].Revision {
+		t.Fatalf("batch retry: changes=%+v changed=%v err=%v", retried, changed, err)
+	}
+
+	xData := []byte("x")
+	yData := []byte("y")
+	x, _, _ := db.Put(ctx, "vault-a", "x.md", "desktop", 0, 1, Hash(xData), xData)
+	y, _, _ := db.Put(ctx, "vault-a", "y.md", "desktop", 0, 1, Hash(yData), yData)
+	x2Data := []byte("x2")
+	_, _, _ = db.Put(ctx, "vault-a", "x.md", "other", x.Revision, 2, Hash(x2Data), x2Data)
+	_, _, err = db.BatchDeleteWithOperation(ctx, "vault-a", "desktop", "22222222-2222-4222-8222-222222222222", []BatchDeleteItem{
+		{Path: "x.md", BaseRevision: x.Revision, ModifiedAt: 3},
+		{Path: "y.md", BaseRevision: y.Revision, ModifiedAt: 3},
+	})
+	var conflict *ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected batch conflict, got %v", err)
+	}
+	latest, _, err := db.ListSnapshot(ctx, "vault-a", 1<<62, "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range latest {
+		if change.Path == "y.md" && change.Deleted {
+			t.Fatal("batch conflict partially deleted y.md")
+		}
+	}
+}
+
 func TestListSnapshotIsStableAtRevision(t *testing.T) {
 	t.Parallel()
 	db := openTestStore(t)

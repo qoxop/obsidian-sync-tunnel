@@ -142,6 +142,10 @@ X-Content-SHA256
 
 无法可靠证明本地操作是重命名时，客户端不得调用该接口。
 
+### 9.2 批量删除
+
+能力 `batch-delete-v1` 允许客户端通过 `POST /api/v2/vaults/{vault}/batch/delete` 提交最多 100 个路径、各自的 `base_revision` 与修改时间。全部 tombstone 与 operation 结果在同一事务内提交；任一冲突都不产生部分结果。重试相同 `operation_id` 返回原有连续 revision。
+
 ## 10. 错误模型
 
 统一返回：

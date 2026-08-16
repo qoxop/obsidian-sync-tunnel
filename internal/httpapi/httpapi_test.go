@@ -327,6 +327,33 @@ func TestRenameEndpoint(t *testing.T) {
 	}
 }
 
+func TestBatchDeleteEndpoint(t *testing.T) {
+	t.Parallel()
+	handler := testHandler(t, 1024)
+	a := mutate(t, handler, http.MethodPut, "a.md", 0, []byte("a"), store.Hash([]byte("a")))
+	b := mutate(t, handler, http.MethodPut, "b.md", 0, []byte("b"), store.Hash([]byte("b")))
+	body, _ := json.Marshal(map[string]any{"items": []store.BatchDeleteItem{
+		{Path: "a.md", BaseRevision: a.Change.Revision, ModifiedAt: 2},
+		{Path: "b.md", BaseRevision: b.Change.Revision, ModifiedAt: 2},
+	}})
+	request := authorizedRequest(http.MethodPost, "/api/v2/vaults/test/batch/delete", bytes.NewReader(body))
+	request.Header.Set("X-Device-ID", "test-device")
+	request.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("batch delete status=%d body=%s", response.Code, response.Body)
+	}
+	var result struct {
+		Changes []store.Change `json:"changes"`
+		Changed bool           `json:"changed"`
+	}
+	decodeJSON(t, response.Body.Bytes(), &result)
+	if !result.Changed || len(result.Changes) != 2 || !result.Changes[0].Deleted || !result.Changes[1].Deleted {
+		t.Fatalf("unexpected batch result: %+v", result)
+	}
+}
+
 type mutationPayload struct {
 	Change  store.Change `json:"change"`
 	Changed bool         `json:"changed"`

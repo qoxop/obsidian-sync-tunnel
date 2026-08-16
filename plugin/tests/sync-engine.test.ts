@@ -877,6 +877,78 @@ describe("SyncEngine snapshot reconciliation", () => {
     expect(summary.uploaded).toBe(0);
     expect(summary.deletedRemote).toBe(0);
   });
+
+  it("commits multiple queued deletions in one atomic batch", async () => {
+    const aHash = await sha256(bytes("a"));
+    const bHash = await sha256(bytes("b"));
+    const files = new Map<string, ArrayBuffer>();
+    const adapter = createMemoryAdapter(files);
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+    const now = Date.now();
+    const data: PersistedData = {
+      schemaVersion: 8,
+      settings: testSettings(),
+      cursor: 2,
+      filterFingerprint: scanner.filterFingerprint(),
+      initialSyncCompleted: true,
+      pendingInitialSyncMode: null,
+      files: {
+        "a.md": { hash: aHash, revision: 1, size: 1, modifiedAt: 1, deleted: false },
+        "b.md": { hash: bHash, revision: 2, size: 1, modifiedAt: 1, deleted: false }
+      },
+      scanCache: {
+        "a.md": { hash: aHash, size: 1, modifiedAt: 1 },
+        "b.md": { hash: bHash, size: 1, modifiedAt: 1 }
+      },
+      pendingPaths: { "a.md": 1, "b.md": 2 },
+      needsFullScan: false,
+      lastFullScanAt: now,
+      lastIntegrityScanAt: now,
+      outbox: {},
+      inbox: {},
+      pendingRenames: {}
+    };
+    let requestCount = 0;
+    const client = {
+      serverInfo: async () => ({ capabilities: ["operation-id", "batch-delete-v1"] }),
+      findOperation: async () => null,
+      status: async () => ({ latest_revision: 2, max_upload_bytes: 1024 }),
+      deleteFiles: async (items: Array<{ path: string; base_revision: number; modified_at: number }>, operationId: string) => {
+        requestCount += 1;
+        expect(Object.hasOwn(data.outbox, operationId)).toBe(true);
+        expect(items.map((item) => item.path).sort()).toEqual(["a.md", "b.md"]);
+        return {
+          changed: true,
+          changes: items.map((item, index) => ({
+            revision: 3 + index,
+            path: item.path,
+            size: 0,
+            modified_at: item.modified_at,
+            deleted: true,
+            device_id: "test-device"
+          }))
+        };
+      },
+      deleteFile: async () => {
+        throw new Error("Batch-capable deletion must not issue individual requests");
+      },
+      putFile: async () => {
+        throw new Error("Unexpected upload");
+      },
+      listChanges: async () => ({ changes: [], cursor: 4, has_more: false })
+    } as unknown as SyncApiClient;
+    const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
+
+    const summary = await engine.run();
+
+    expect(requestCount).toBe(1);
+    expect(data.files["a.md"]?.deleted).toBe(true);
+    expect(data.files["b.md"]?.deleted).toBe(true);
+    expect(data.outbox).toEqual({});
+    expect(data.pendingPaths).toEqual({});
+    expect(summary.deletedRemote).toBe(2);
+  });
 });
 
 function createMemoryAdapter(files: Map<string, ArrayBuffer>): DataAdapter {

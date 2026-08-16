@@ -30,7 +30,7 @@ export interface ScanCacheEntry {
 
 export interface OutboxOperation {
   operationId: string;
-  kind: "put" | "delete" | "rename";
+  kind: "put" | "delete" | "rename" | "batch-delete";
   path: string;
   sourcePath?: string;
   baseRevision: number;
@@ -40,6 +40,13 @@ export interface OutboxOperation {
   createdAt: number;
   transport?: "whole" | "chunks";
   chunks?: ChunkRef[];
+  batchDeletes?: BatchDeleteItem[];
+}
+
+export interface BatchDeleteItem {
+  path: string;
+  base_revision: number;
+  modified_at: number;
 }
 
 export interface PendingRename {
@@ -119,6 +126,11 @@ export interface Change {
 export interface MutationResponse {
   change: Change;
   related_changes?: Change[];
+  changed: boolean;
+}
+
+export interface BatchMutationResponse {
+  changes: Change[];
   changed: boolean;
 }
 
