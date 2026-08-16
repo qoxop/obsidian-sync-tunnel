@@ -1,6 +1,6 @@
 import { requestUrl, RequestUrlParam, RequestUrlResponse } from "obsidian";
 
-import { Change, ChangesResponse, MutationResponse, StatusResponse } from "./types";
+import { Change, ChangesResponse, MutationResponse, ServerInfoResponse, SnapshotResponse, StatusResponse } from "./types";
 
 interface ClientOptions {
   serverUrl: string;
@@ -38,6 +38,23 @@ export class SyncApiClient {
   async status(): Promise<StatusResponse> {
     return this.jsonRequest<StatusResponse>({
       url: `${this.vaultUrl()}/status`,
+      method: "GET"
+    });
+  }
+
+  async serverInfo(): Promise<ServerInfoResponse> {
+    return this.jsonRequest<ServerInfoResponse>({
+      url: `${this.baseUrl}/api/v2/server-info`,
+      method: "GET"
+    });
+  }
+
+  async listSnapshot(at?: number, after = "", limit = 250): Promise<SnapshotResponse> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (at !== undefined) query.set("at", String(at));
+    if (after) query.set("after", after);
+    return this.jsonRequest<SnapshotResponse>({
+      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/snapshot?${query.toString()}`,
       method: "GET"
     });
   }

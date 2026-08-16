@@ -8,8 +8,11 @@ export interface PluginSettings {
   automaticSync: boolean;
   syncOnStartup: boolean;
   syncIntervalSeconds: number;
+  syncProfile: SyncProfile;
   excludedPatterns: string[];
 }
+
+export type SyncProfile = "notes" | "recommended" | "full" | "custom";
 
 export interface FileState {
   hash: string;
@@ -23,7 +26,23 @@ export interface PersistedData {
   schemaVersion: number;
   settings: PluginSettings;
   cursor: number;
+  filterFingerprint: string;
+  initialSyncCompleted: boolean;
+  pendingInitialSyncMode: InitialSyncMode | null;
   files: Record<string, FileState>;
+}
+
+export type InitialSyncMode = "merge" | "remote" | "local";
+
+export interface InitialSyncPreview {
+  localFiles: number;
+  remoteFiles: number;
+  same: number;
+  different: number;
+  localOnly: number;
+  remoteOnly: number;
+  localAgainstRemoteDelete: number;
+  snapshotRevision: number;
 }
 
 export interface LocalFile {
@@ -59,6 +78,21 @@ export interface StatusResponse {
   max_upload_bytes: number;
 }
 
+export interface ServerInfoResponse {
+  server_version: string;
+  protocol: { min: number; max: number };
+  capabilities: string[];
+  database: { schema_version: number };
+  limits: { max_upload_bytes: number; max_page_size: number };
+}
+
+export interface SnapshotResponse {
+  files: Change[];
+  snapshot_revision: number;
+  cursor: string;
+  has_more: boolean;
+}
+
 export interface SyncSummary {
   uploaded: number;
   downloaded: number;
@@ -66,4 +100,5 @@ export interface SyncSummary {
   deletedLocal: number;
   conflicts: number;
   skipped: number;
+  restartRequired: boolean;
 }

@@ -102,6 +102,68 @@ func TestUploadValidationAndLimit(t *testing.T) {
 	}
 }
 
+func TestServerInfoAndStableSnapshot(t *testing.T) {
+	t.Parallel()
+	handler := testHandler(t, 1024)
+
+	infoResponse := httptest.NewRecorder()
+	handler.ServeHTTP(infoResponse, authorizedRequest(http.MethodGet, "/api/v2/server-info", nil))
+	if infoResponse.Code != http.StatusOK {
+		t.Fatalf("server info status=%d body=%s", infoResponse.Code, infoResponse.Body)
+	}
+	var info struct {
+		ServerVersion string   `json:"server_version"`
+		Capabilities  []string `json:"capabilities"`
+		Protocol      struct {
+			Min int `json:"min"`
+			Max int `json:"max"`
+		} `json:"protocol"`
+	}
+	decodeJSON(t, infoResponse.Body.Bytes(), &info)
+	if info.ServerVersion != "test" || info.Protocol.Min != 1 || info.Protocol.Max != 2 || len(info.Capabilities) == 0 {
+		t.Fatalf("unexpected server info: %+v", info)
+	}
+
+	a1Data := []byte("a1")
+	a1 := mutate(t, handler, http.MethodPut, "a.md", 0, a1Data, store.Hash(a1Data))
+	bData := []byte("b")
+	b := mutate(t, handler, http.MethodPut, "b.md", 0, bData, store.Hash(bData))
+	a2Data := []byte("a2")
+	_ = mutate(t, handler, http.MethodPut, "a.md", a1.Change.Revision, a2Data, store.Hash(a2Data))
+
+	firstTarget := "/api/v2/vaults/test/snapshot?at=" + strconv.FormatInt(b.Change.Revision, 10) + "&limit=1"
+	firstResponse := httptest.NewRecorder()
+	handler.ServeHTTP(firstResponse, authorizedRequest(http.MethodGet, firstTarget, nil))
+	if firstResponse.Code != http.StatusOK {
+		t.Fatalf("first snapshot status=%d body=%s", firstResponse.Code, firstResponse.Body)
+	}
+	var firstPage struct {
+		Files            []store.Change `json:"files"`
+		SnapshotRevision int64          `json:"snapshot_revision"`
+		Cursor           string         `json:"cursor"`
+		HasMore          bool           `json:"has_more"`
+	}
+	decodeJSON(t, firstResponse.Body.Bytes(), &firstPage)
+	if len(firstPage.Files) != 1 || firstPage.Files[0].BlobHash != store.Hash(a1Data) || !firstPage.HasMore {
+		t.Fatalf("unexpected first snapshot page: %+v", firstPage)
+	}
+
+	secondTarget := firstTarget + "&after=" + url.QueryEscape(firstPage.Cursor)
+	secondResponse := httptest.NewRecorder()
+	handler.ServeHTTP(secondResponse, authorizedRequest(http.MethodGet, secondTarget, nil))
+	if secondResponse.Code != http.StatusOK {
+		t.Fatalf("second snapshot status=%d body=%s", secondResponse.Code, secondResponse.Body)
+	}
+	var secondPage struct {
+		Files   []store.Change `json:"files"`
+		HasMore bool           `json:"has_more"`
+	}
+	decodeJSON(t, secondResponse.Body.Bytes(), &secondPage)
+	if len(secondPage.Files) != 1 || secondPage.Files[0].Path != "b.md" || secondPage.HasMore {
+		t.Fatalf("unexpected second snapshot page: %+v", secondPage)
+	}
+}
+
 type mutationPayload struct {
 	Change  store.Change `json:"change"`
 	Changed bool         `json:"changed"`

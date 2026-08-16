@@ -18,6 +18,47 @@ import (
 
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
+const CurrentSchemaVersion = 1
+
+var migrations = [][]string{
+	{
+		`CREATE TABLE IF NOT EXISTS blobs (
+			hash TEXT PRIMARY KEY,
+			size INTEGER NOT NULL,
+			data BLOB NOT NULL,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS files (
+			vault_id TEXT NOT NULL,
+			path TEXT NOT NULL,
+			revision INTEGER NOT NULL,
+			blob_hash TEXT,
+			size INTEGER NOT NULL,
+			modified_at INTEGER NOT NULL,
+			deleted INTEGER NOT NULL,
+			device_id TEXT NOT NULL,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (vault_id, path),
+			FOREIGN KEY (blob_hash) REFERENCES blobs(hash)
+		)`,
+		`CREATE TABLE IF NOT EXISTS changes (
+			seq INTEGER PRIMARY KEY AUTOINCREMENT,
+			vault_id TEXT NOT NULL,
+			path TEXT NOT NULL,
+			blob_hash TEXT,
+			size INTEGER NOT NULL,
+			modified_at INTEGER NOT NULL,
+			deleted INTEGER NOT NULL,
+			device_id TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			FOREIGN KEY (blob_hash) REFERENCES blobs(hash)
+		)`,
+		`CREATE INDEX IF NOT EXISTS changes_vault_seq ON changes(vault_id, seq)`,
+		`CREATE INDEX IF NOT EXISTS changes_vault_blob ON changes(vault_id, blob_hash)`,
+		`CREATE INDEX IF NOT EXISTS changes_vault_path_seq ON changes(vault_id, path, seq DESC)`,
+	},
+}
+
 type Store struct {
 	db *sql.DB
 }
@@ -63,50 +104,51 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) initialize(ctx context.Context) error {
-	statements := []string{
+	pragmas := []string{
 		`PRAGMA journal_mode = WAL`,
 		`PRAGMA foreign_keys = ON`,
 		`PRAGMA busy_timeout = 5000`,
-		`CREATE TABLE IF NOT EXISTS blobs (
-			hash TEXT PRIMARY KEY,
-			size INTEGER NOT NULL,
-			data BLOB NOT NULL,
-			created_at INTEGER NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS files (
-			vault_id TEXT NOT NULL,
-			path TEXT NOT NULL,
-			revision INTEGER NOT NULL,
-			blob_hash TEXT,
-			size INTEGER NOT NULL,
-			modified_at INTEGER NOT NULL,
-			deleted INTEGER NOT NULL,
-			device_id TEXT NOT NULL,
-			updated_at INTEGER NOT NULL,
-			PRIMARY KEY (vault_id, path),
-			FOREIGN KEY (blob_hash) REFERENCES blobs(hash)
-		)`,
-		`CREATE TABLE IF NOT EXISTS changes (
-			seq INTEGER PRIMARY KEY AUTOINCREMENT,
-			vault_id TEXT NOT NULL,
-			path TEXT NOT NULL,
-			blob_hash TEXT,
-			size INTEGER NOT NULL,
-			modified_at INTEGER NOT NULL,
-			deleted INTEGER NOT NULL,
-			device_id TEXT NOT NULL,
-			created_at INTEGER NOT NULL,
-			FOREIGN KEY (blob_hash) REFERENCES blobs(hash)
-		)`,
-		`CREATE INDEX IF NOT EXISTS changes_vault_seq ON changes(vault_id, seq)`,
-		`CREATE INDEX IF NOT EXISTS changes_vault_blob ON changes(vault_id, blob_hash)`,
 	}
-	for _, statement := range statements {
+	for _, statement := range pragmas {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("initialize sqlite: %w", err)
+			return fmt.Errorf("configure sqlite: %w", err)
+		}
+	}
+	current, err := s.SchemaVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if current > CurrentSchemaVersion {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", current, CurrentSchemaVersion)
+	}
+	for version := current + 1; version <= CurrentSchemaVersion; version++ {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin schema migration %d: %w", version, err)
+		}
+		for _, statement := range migrations[version-1] {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("apply schema migration %d: %w", version, err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", version)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("record schema migration %d: %w", version, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit schema migration %d: %w", version, err)
 		}
 	}
 	return nil
+}
+
+func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
+	var version int
+	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return 0, fmt.Errorf("read database schema version: %w", err)
+	}
+	return version, nil
 }
 
 func ValidateID(kind, value string) error {
@@ -259,6 +301,61 @@ func (s *Store) ListChanges(ctx context.Context, vaultID string, after int64, li
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT seq, path, blob_hash, size, modified_at, deleted, device_id
 		FROM changes WHERE vault_id=? AND seq>? ORDER BY seq ASC LIMIT ?`, vaultID, after, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	changes := make([]Change, 0, limit)
+	for rows.Next() {
+		var change Change
+		var hash sql.NullString
+		if err := rows.Scan(&change.Revision, &change.Path, &hash, &change.Size, &change.ModifiedAt, &change.Deleted, &change.DeviceID); err != nil {
+			return nil, false, err
+		}
+		change.BlobHash = hash.String
+		changes = append(changes, change)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(changes) > limit
+	if hasMore {
+		changes = changes[:limit]
+	}
+	return changes, hasMore, nil
+}
+
+// ListSnapshot returns the last change for every path at or before atRevision.
+// Paging is stable while retained changes remain available because every page
+// is evaluated against the same revision instead of the mutable files table.
+func (s *Store) ListSnapshot(ctx context.Context, vaultID string, atRevision int64, afterPath string, limit int) ([]Change, bool, error) {
+	if err := ValidateID("vault ID", vaultID); err != nil {
+		return nil, false, err
+	}
+	if atRevision < 0 {
+		return nil, false, errors.New("snapshot revision cannot be negative")
+	}
+	if limit < 1 || limit > 1000 {
+		return nil, false, errors.New("limit must be between 1 and 1000")
+	}
+	if afterPath != "" {
+		var err error
+		afterPath, err = NormalizePath(afterPath)
+		if err != nil {
+			return nil, false, fmt.Errorf("invalid snapshot cursor: %w", err)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.path, c.blob_hash, c.size, c.modified_at, c.deleted, c.device_id
+		FROM changes c
+		JOIN (
+			SELECT path, MAX(seq) AS seq
+			FROM changes
+			WHERE vault_id=? AND seq<=?
+			GROUP BY path
+		) latest ON latest.path=c.path AND latest.seq=c.seq
+		WHERE c.vault_id=? AND c.path>?
+		ORDER BY c.path ASC
+		LIMIT ?`, vaultID, atRevision, vaultID, afterPath, limit+1)
 	if err != nil {
 		return nil, false, err
 	}

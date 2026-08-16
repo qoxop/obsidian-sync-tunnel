@@ -32,10 +32,18 @@ $base = "$ServerUrl/api/v1/vaults/$vaultId"
 
 $health = Invoke-RestMethod -Uri "$ServerUrl/healthz"
 if ($health.status -ne "ok") { throw "Health check failed" }
+$serverInfo = Invoke-RestMethod -Uri "$ServerUrl/api/v2/server-info" -Headers @{ Authorization = "Bearer $Token" }
+if ($serverInfo.protocol.max -lt 2 -or $serverInfo.capabilities -notcontains "snapshot-v1") {
+    throw "Server does not advertise Protocol v2 snapshot support"
+}
 $put = Invoke-RestMethod -Method Put -Uri "$base/file?path=$encodedPath" -Headers $headers -ContentType "application/octet-stream" -Body $data
 if (-not $put.changed) { throw "Initial upload did not create a change" }
 $page = Invoke-RestMethod -Uri "$base/changes?after=0&limit=10" -Headers @{ Authorization = "Bearer $Token" }
 if ($page.changes.Count -ne 1) { throw "Expected one change, got $($page.changes.Count)" }
+$snapshot = Invoke-RestMethod -Uri "$ServerUrl/api/v2/vaults/$vaultId/snapshot?limit=10" -Headers @{ Authorization = "Bearer $Token" }
+if ($snapshot.snapshot_revision -ne $put.change.revision -or $snapshot.files.Count -ne 1 -or $snapshot.files[0].path -ne $path) {
+    throw "Protocol v2 snapshot did not return the uploaded file"
+}
 $download = Invoke-WebRequest -Uri "$base/blobs/$sha" -Headers @{ Authorization = "Bearer $Token" }
 $downloaded = $download.Content
 if ($downloaded -is [string]) { $downloaded = [System.Text.Encoding]::UTF8.GetBytes($downloaded) }

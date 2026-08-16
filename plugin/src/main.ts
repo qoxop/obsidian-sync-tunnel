@@ -1,12 +1,13 @@
 import { Notice, Plugin } from "obsidian";
 
 import { SyncApiClient } from "./api-client";
+import { migrateData } from "./data";
+import { buildInitialSyncPreview } from "./initial-sync";
+import { InitialSyncModal } from "./initial-sync-modal";
 import { SyncTunnelSettingTab } from "./settings";
 import { SyncEngine } from "./sync-engine";
-import { PersistedData, PluginSettings, SyncSummary } from "./types";
+import { InitialSyncMode, PersistedData, SyncSummary } from "./types";
 import { VaultScanner } from "./vault-scanner";
-
-const SCHEMA_VERSION = 1;
 
 export default class SyncTunnelPlugin extends Plugin {
   data!: PersistedData;
@@ -53,22 +54,24 @@ export default class SyncTunnelPlugin extends Plugin {
       if (showNotice) new Notice("Sync Tunnel: 已有同步任务正在运行");
       return this.syncPromise;
     }
+    if (!this.data.initialSyncCompleted && !this.data.pendingInitialSyncMode) {
+      this.setStatus("等待首次同步确认");
+      if (showNotice) await this.previewInitialSync();
+      return undefined;
+    }
     try {
       const client = await this.createClient();
-      const configDirectory = this.app.vault.configDir;
-      const protectedPaths = [
-        `${configDirectory}/plugins/${this.manifest.id}/data.json`,
-        // Protect settings left by pre-release builds that used the old plugin ID.
-        `${configDirectory}/plugins/obsidian-sync-tunnel/data.json`
-      ];
-      const scanner = new VaultScanner(this.app.vault, this.data.settings.excludedPatterns, protectedPaths);
+      const scanner = this.createScanner();
       const engine = new SyncEngine(this.app.vault, this.data, client, scanner, () => this.savePluginData());
       this.setStatus("同步中…");
       this.syncPromise = engine.run();
       const summary = await this.syncPromise;
       const text = formatSummary(summary);
-      this.setStatus(`已同步 ${new Date().toLocaleTimeString()}`);
-      if (showNotice || summary.conflicts > 0) new Notice(`Sync Tunnel: ${text}`, summary.conflicts > 0 ? 10000 : 5000);
+      this.setStatus(`${summary.restartRequired ? "已同步，需重启" : "已同步"} ${new Date().toLocaleTimeString()}`);
+      if (showNotice || summary.conflicts > 0 || summary.restartRequired) {
+        const restartText = summary.restartRequired ? "；插件、主题或 CSS 已变化，请重启 Obsidian 使其生效" : "";
+        new Notice(`Sync Tunnel: ${text}${restartText}`, summary.conflicts > 0 || summary.restartRequired ? 12000 : 5000);
+      }
       return summary;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -79,6 +82,45 @@ export default class SyncTunnelPlugin extends Plugin {
     } finally {
       this.syncPromise = undefined;
       await this.savePluginData();
+    }
+  }
+
+  async previewInitialSync(): Promise<void> {
+    try {
+      this.setStatus("正在生成首次同步预览…");
+      const client = await this.createClient();
+      const info = await client.serverInfo();
+      if (info.protocol.max < 2 || !info.capabilities.includes("snapshot-v1")) {
+        throw new Error(`服务器 ${info.server_version} 不支持安全快照协议，请先升级服务端`);
+      }
+      const preview = await buildInitialSyncPreview(this.createScanner(), client);
+      this.setStatus("等待首次同步确认");
+      new InitialSyncModal(this.app, preview, async (mode) => this.approveInitialSync(mode)).open();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.setStatus("首次同步预览失败");
+      new Notice(`Sync Tunnel 无法生成首次同步预览: ${message}`, 12000);
+    }
+  }
+
+  private async approveInitialSync(mode: InitialSyncMode): Promise<void> {
+    this.data.pendingInitialSyncMode = mode;
+    await this.savePluginData();
+    await this.runSync(true);
+  }
+
+  async testConnection(): Promise<void> {
+    try {
+      const client = await this.createClient();
+      const info = await client.serverInfo();
+      if (info.protocol.max < 2 || !info.capabilities.includes("snapshot-v1")) {
+        throw new Error(`服务器 ${info.server_version} 不支持安全快照协议，请先升级服务端`);
+      }
+      const status = await client.status();
+      new Notice(`Sync Tunnel: 连接成功；服务端 ${info.server_version}，Vault revision ${status.latest_revision}`, 8000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`Sync Tunnel 连接测试失败: ${message}`, 12000);
     }
   }
 
@@ -104,6 +146,23 @@ export default class SyncTunnelPlugin extends Plugin {
     });
   }
 
+  private createScanner(): VaultScanner {
+    const configDirectory = this.app.vault.configDir;
+    const protectedPaths = [
+      // Sync Tunnel is installed and upgraded through Obsidian/BRAT. Synchronizing
+      // its running bundle could replace another device's code mid-session.
+      `${configDirectory}/plugins/${this.manifest.id}`,
+      // Protect all files left by pre-release builds that used the old plugin ID.
+      `${configDirectory}/plugins/obsidian-sync-tunnel`
+    ];
+    return new VaultScanner(
+      this.app.vault,
+      this.data.settings.excludedPatterns,
+      protectedPaths,
+      this.data.settings.syncProfile
+    );
+  }
+
   private isConfigured(): boolean {
     const settings = this.data.settings;
     return Boolean(settings.serverUrl && settings.vaultId && settings.deviceId && settings.apiTokenSecretName);
@@ -118,38 +177,6 @@ export default class SyncTunnelPlugin extends Plugin {
     this.statusElement?.setText(`Sync Tunnel: ${text}`);
     this.statusElement?.addClass("sync-tunnel-status");
   }
-}
-
-function migrateData(raw: unknown): PersistedData {
-  const defaults: PluginSettings = {
-    serverUrl: "",
-    vaultId: "",
-    deviceId: generateDeviceId(),
-    apiTokenSecretName: "",
-    accessClientId: "",
-    accessClientSecretName: "",
-    automaticSync: true,
-    syncOnStartup: true,
-    syncIntervalSeconds: 300,
-    excludedPatterns: [".git/**", ".trash/**", "**/.DS_Store", "**/Thumbs.db"]
-  };
-  const parsed = isRecord(raw) ? raw : {};
-  const settings = isRecord(parsed.settings) ? parsed.settings : {};
-  return {
-    schemaVersion: SCHEMA_VERSION,
-    settings: { ...defaults, ...settings } as PluginSettings,
-    cursor: typeof parsed.cursor === "number" && parsed.cursor >= 0 ? parsed.cursor : 0,
-    files: isRecord(parsed.files) ? parsed.files as Record<string, PersistedData["files"][string]> : {}
-  };
-}
-
-function generateDeviceId(): string {
-  const platform = navigator.userAgent.includes("Mobile") ? "mobile" : "device";
-  return `${platform}-${crypto.randomUUID().slice(0, 8)}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function formatSummary(summary: SyncSummary): string {

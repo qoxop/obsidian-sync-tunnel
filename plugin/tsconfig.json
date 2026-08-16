@@ -12,5 +12,5 @@
     "target": "ES2022",
     "useUnknownInCatchVariables": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
 }

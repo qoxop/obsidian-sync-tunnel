@@ -2,6 +2,35 @@ export function normalizeVaultPath(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/^\/+/, "");
 }
 
+export function pathIsWithin(path: string, directory: string): boolean {
+  const normalizedPath = normalizeVaultPath(path).replace(/\/+$/u, "");
+  const normalizedDirectory = normalizeVaultPath(directory).replace(/\/+$/u, "");
+  if (!normalizedDirectory) return false;
+  return normalizedPath === normalizedDirectory || normalizedPath.startsWith(`${normalizedDirectory}/`);
+}
+
+export function pathRequiresObsidianRestart(path: string, configDirectory: string): boolean {
+  const normalizedPath = normalizeVaultPath(path);
+  const normalizedConfig = normalizeVaultPath(configDirectory);
+  return normalizedPath === `${normalizedConfig}/community-plugins.json`
+    || pathIsWithin(normalizedPath, `${normalizedConfig}/plugins`)
+    || pathIsWithin(normalizedPath, `${normalizedConfig}/themes`)
+    || pathIsWithin(normalizedPath, `${normalizedConfig}/snippets`);
+}
+
+export function assertNoPortablePathCollisions(paths: string[]): void {
+  const seen = new Map<string, string>();
+  for (const path of paths) {
+    const normalized = normalizeVaultPath(path);
+    const portableKey = normalized.normalize("NFC").toLocaleLowerCase("en-US");
+    const existing = seen.get(portableKey);
+    if (existing && existing !== normalized) {
+      throw new Error(`跨平台路径冲突: "${existing}" 与 "${normalized}" 在部分设备上会指向同一路径`);
+    }
+    seen.set(portableKey, normalized);
+  }
+}
+
 export function globMatches(path: string, pattern: string): boolean {
   const normalizedPath = normalizeVaultPath(path);
   const normalizedPattern = normalizeVaultPath(pattern.trim());

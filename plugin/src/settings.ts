@@ -1,6 +1,7 @@
 import { App, PluginSettingTab, SecretComponent, Setting } from "obsidian";
 
 import SyncTunnelPlugin from "./main";
+import type { SyncProfile } from "./types";
 
 export class SyncTunnelSettingTab extends PluginSettingTab {
   constructor(app: App, private readonly plugin: SyncTunnelPlugin) {
@@ -80,6 +81,23 @@ export class SyncTunnelSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+      .setName("Test connection")
+      .setDesc("验证 Tunnel、Access、API token、Vault ID 和服务端协议版本。")
+      .addButton((button) => button
+        .setButtonText("Test")
+        .onClick(async () => this.plugin.testConnection()));
+
+    if (!this.plugin.data.initialSyncCompleted && !this.plugin.data.pendingInitialSyncMode) {
+      new Setting(containerEl)
+        .setName("First sync preview")
+        .setDesc("比较本地与远端快照，并在开始写入前选择初始化方式。")
+        .addButton((button) => button
+          .setButtonText("Preview")
+          .setCta()
+          .onClick(async () => this.plugin.previewInitialSync()));
+    }
+
+    new Setting(containerEl)
       .setName("Automatic sync")
       .setDesc("按下面的时间间隔扫描并同步。")
       .addToggle((toggle) => toggle
@@ -96,6 +114,20 @@ export class SyncTunnelSettingTab extends PluginSettingTab {
         .setValue(this.plugin.data.settings.syncOnStartup)
         .onChange(async (value) => {
           this.plugin.data.settings.syncOnStartup = value;
+          await this.plugin.savePluginData();
+        }));
+
+    new Setting(containerEl)
+      .setName("Sync profile")
+      .setDesc("推荐模式同步笔记、附件、常用设置和插件程序，但不复制其他插件的 data.json。完整模式可能复制其中的明文密钥。")
+      .addDropdown((dropdown) => dropdown
+        .addOption("notes", "Notes and attachments")
+        .addOption("recommended", "Recommended safe")
+        .addOption("full", "Full Vault")
+        .addOption("custom", "Custom exclusions")
+        .setValue(this.plugin.data.settings.syncProfile)
+        .onChange(async (value) => {
+          this.plugin.data.settings.syncProfile = value as SyncProfile;
           await this.plugin.savePluginData();
         }));
 

@@ -6,7 +6,7 @@ param(
     [int]$HostPort = 8787,
     [ValidateRange(1024, [int64]::MaxValue)]
     [int64]$MaxUploadBytes = 67108864,
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.2.0",
     [switch]$ForceConfig,
     [switch]$HideGeneratedToken
 )

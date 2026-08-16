@@ -29,6 +29,8 @@ func New(db *store.Store, token string, maxUploadBytes int64, version string, lo
 	api := &API{store: db, tokenHash: sha256.Sum256([]byte(token)), maxUploadBytes: maxUploadBytes, version: version, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
+	mux.HandleFunc("GET /api/v2/server-info", api.serverInfo)
+	mux.HandleFunc("GET /api/v2/vaults/{vault}/snapshot", api.snapshot)
 	mux.HandleFunc("GET /api/v1/vaults/{vault}/status", api.status)
 	mux.HandleFunc("GET /api/v1/vaults/{vault}/changes", api.changes)
 	mux.HandleFunc("GET /api/v1/vaults/{vault}/blobs/{hash}", api.blob)
@@ -39,6 +41,24 @@ func New(db *store.Store, token string, maxUploadBytes int64, version string, lo
 
 func (a *API) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "version": a.version})
+}
+
+func (a *API) serverInfo(w http.ResponseWriter, r *http.Request) {
+	schemaVersion, err := a.store.SchemaVersion(r.Context())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"server_version": a.version,
+		"protocol":       map[string]int{"min": 1, "max": 2},
+		"capabilities":   []string{"snapshot-v1", "whole-file-v1"},
+		"database":       map[string]int{"schema_version": schemaVersion},
+		"limits": map[string]any{
+			"max_upload_bytes": a.maxUploadBytes,
+			"max_page_size":    1000,
+		},
+	})
 }
 
 func (a *API) status(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +91,43 @@ func (a *API) changes(w http.ResponseWriter, r *http.Request) {
 		cursor = changes[len(changes)-1].Revision
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"changes": changes, "cursor": cursor, "has_more": hasMore})
+}
+
+func (a *API) snapshot(w http.ResponseWriter, r *http.Request) {
+	latest, err := a.store.LatestRevision(r.Context(), r.PathValue("vault"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	at := latest
+	if value := r.URL.Query().Get("at"); value != "" {
+		at, err = strconv.ParseInt(value, 10, 64)
+		if err != nil || at < 0 || at > latest {
+			writeError(w, http.StatusBadRequest, "invalid_snapshot_revision", "at must be a revision returned by this vault")
+			return
+		}
+	}
+	limit64, err := parseIntQuery(r, "limit", 250)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_limit", err.Error())
+		return
+	}
+	after := r.URL.Query().Get("after")
+	files, hasMore, err := a.store.ListSnapshot(r.Context(), r.PathValue("vault"), at, after, int(limit64))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	cursor := after
+	if len(files) > 0 {
+		cursor = files[len(files)-1].Path
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"files":             files,
+		"snapshot_revision": at,
+		"cursor":            cursor,
+		"has_more":          hasMore,
+	})
 }
 
 func (a *API) blob(w http.ResponseWriter, r *http.Request) {

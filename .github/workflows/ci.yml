@@ -33,6 +33,9 @@ jobs:
       - name: Typecheck plugin
         working-directory: plugin
         run: npm run typecheck
+      - name: Test plugin
+        working-directory: plugin
+        run: npm test
       - name: Bundle plugin
         working-directory: plugin
         run: npm run build

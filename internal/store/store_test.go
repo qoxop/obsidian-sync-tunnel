@@ -86,6 +86,62 @@ func TestListChangesPagination(t *testing.T) {
 	}
 }
 
+func TestListSnapshotIsStableAtRevision(t *testing.T) {
+	t.Parallel()
+	db := openTestStore(t)
+	ctx := context.Background()
+
+	a1Data := []byte("a1")
+	a1, _, err := db.Put(ctx, "vault-a", "a.md", "desktop", 0, 1, Hash(a1Data), a1Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bData := []byte("b")
+	b, _, err := db.Put(ctx, "vault-a", "b.md", "desktop", 0, 2, Hash(bData), bData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotRevision := b.Revision
+
+	a2Data := []byte("a2")
+	if _, _, err := db.Put(ctx, "vault-a", "a.md", "desktop", a1.Revision, 3, Hash(a2Data), a2Data); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.Delete(ctx, "vault-a", "b.md", "desktop", b.Revision, 4); err != nil {
+		t.Fatal(err)
+	}
+	cData := []byte("c")
+	if _, _, err := db.Put(ctx, "vault-a", "c.md", "desktop", 0, 5, Hash(cData), cData); err != nil {
+		t.Fatal(err)
+	}
+
+	firstPage, hasMore, err := db.ListSnapshot(ctx, "vault-a", snapshotRevision, "", 1)
+	if err != nil || !hasMore || len(firstPage) != 1 || firstPage[0].Path != "a.md" || firstPage[0].BlobHash != Hash(a1Data) {
+		t.Fatalf("first snapshot page: %+v hasMore=%v err=%v", firstPage, hasMore, err)
+	}
+	secondPage, hasMore, err := db.ListSnapshot(ctx, "vault-a", snapshotRevision, firstPage[0].Path, 10)
+	if err != nil || hasMore || len(secondPage) != 1 || secondPage[0].Path != "b.md" || secondPage[0].Deleted {
+		t.Fatalf("second snapshot page: %+v hasMore=%v err=%v", secondPage, hasMore, err)
+	}
+
+	latest, hasMore, err := db.ListSnapshot(ctx, "vault-a", 1<<62, "", 10)
+	if err != nil || hasMore || len(latest) != 3 {
+		t.Fatalf("latest snapshot: %+v hasMore=%v err=%v", latest, hasMore, err)
+	}
+	if latest[1].Path != "b.md" || !latest[1].Deleted {
+		t.Fatalf("latest tombstone missing: %+v", latest)
+	}
+}
+
+func TestSchemaVersion(t *testing.T) {
+	t.Parallel()
+	db := openTestStore(t)
+	version, err := db.SchemaVersion(context.Background())
+	if err != nil || version != CurrentSchemaVersion {
+		t.Fatalf("schema version=%d err=%v", version, err)
+	}
+}
+
 func TestNormalizePath(t *testing.T) {
 	t.Parallel()
 	valid, err := NormalizePath(`folder\note.md`)

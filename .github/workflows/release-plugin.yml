@@ -24,6 +24,9 @@ jobs:
       - name: Typecheck
         working-directory: plugin
         run: npm run typecheck
+      - name: Test
+        working-directory: plugin
+        run: npm test
       - name: Build plugin
         working-directory: plugin
         run: npm run build

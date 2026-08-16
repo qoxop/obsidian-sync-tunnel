@@ -2,8 +2,8 @@ import { DataAdapter, Vault } from "obsidian";
 
 import { ApiError, SyncApiClient } from "./api-client";
 import { sha256 } from "./hash";
-import { conflictPath } from "./path";
-import { Change, FileState, LocalFile, PersistedData, SyncSummary } from "./types";
+import { conflictPath, pathRequiresObsidianRestart } from "./path";
+import { Change, FileState, InitialSyncMode, LocalFile, PersistedData, SyncSummary } from "./types";
 import { VaultScanner } from "./vault-scanner";
 
 export class SyncEngine {
@@ -23,16 +23,86 @@ export class SyncEngine {
   async run(): Promise<SyncSummary> {
     if (this.running) throw new Error("A sync is already running");
     this.running = true;
-    const summary: SyncSummary = { uploaded: 0, downloaded: 0, deletedRemote: 0, deletedLocal: 0, conflicts: 0, skipped: 0 };
+    const summary: SyncSummary = {
+      uploaded: 0,
+      downloaded: 0,
+      deletedRemote: 0,
+      deletedLocal: 0,
+      conflicts: 0,
+      skipped: 0,
+      restartRequired: false
+    };
     try {
+      const initialMode = this.data.initialSyncCompleted ? null : this.data.pendingInitialSyncMode;
+      if (!this.data.initialSyncCompleted && !initialMode) throw new Error("Initial sync requires explicit confirmation");
       const status = await this.client.status();
+      const filterFingerprint = this.scanner.filterFingerprint();
+      if (this.data.filterFingerprint !== filterFingerprint || initialMode) {
+        await this.reconcileSnapshot(filterFingerprint, summary, initialMode);
+      }
       const localFiles = await this.scanner.scan();
       await this.pushLocalChanges(localFiles, status.max_upload_bytes, summary);
       await this.pullRemoteChanges(summary);
+      if (initialMode) {
+        this.data.initialSyncCompleted = true;
+        this.data.pendingInitialSyncMode = null;
+      }
       await this.persist();
       return summary;
     } finally {
       this.running = false;
+    }
+  }
+
+  private async reconcileSnapshot(
+    filterFingerprint: string,
+    summary: SyncSummary,
+    initialMode: InitialSyncMode | null
+  ): Promise<void> {
+    let snapshotRevision: number | undefined;
+    let cursor = "";
+    let hasMore = true;
+    const snapshot = new Map<string, Change>();
+    while (hasMore) {
+      const page = await this.client.listSnapshot(snapshotRevision, cursor);
+      if (snapshotRevision === undefined) {
+        snapshotRevision = page.snapshot_revision;
+      } else if (page.snapshot_revision !== snapshotRevision) {
+        throw new Error("Server changed the snapshot revision while paging");
+      }
+      for (const change of page.files) {
+        if (!this.scanner.isExcluded(change.path)) snapshot.set(change.path, change);
+      }
+      cursor = page.cursor;
+      hasMore = page.has_more;
+    }
+
+    if (initialMode === "remote") {
+      await this.preserveLocalOnlyFiles(new Set(snapshot.keys()), summary);
+    }
+    for (const change of snapshot.values()) {
+      const previous = this.data.files[change.path];
+      if (previous && previous.revision >= change.revision) continue;
+      if (initialMode === "local") {
+        this.data.files[change.path] = stateFromChange(change);
+      } else {
+        await this.applyRemoteChange(change, summary);
+      }
+    }
+    this.data.cursor = snapshotRevision ?? 0;
+    this.data.filterFingerprint = filterFingerprint;
+    await this.persist();
+  }
+
+  private async preserveLocalOnlyFiles(remotePaths: Set<string>, summary: SyncSummary): Promise<void> {
+    const localFiles = await this.scanner.scan();
+    for (const path of localFiles.keys()) {
+      if (remotePaths.has(path)) continue;
+      const content = await this.adapter.readBinary(path);
+      await this.preserveConflict(path, content);
+      await this.adapter.remove(path);
+      summary.conflicts += 1;
+      if (pathRequiresObsidianRestart(path, this.vault.configDir)) summary.restartRequired = true;
     }
   }
 
@@ -100,11 +170,14 @@ export class SyncEngine {
   private async applyRemoteChange(change: Change, summary: SyncSummary, preserveConcurrentLocal = true): Promise<void> {
     const previous = this.data.files[change.path];
     const exists = await this.adapter.exists(change.path);
-    if (exists && previous) {
+    if (exists) {
       const currentData = await this.adapter.readBinary(change.path);
       const currentHash = await sha256(currentData);
       const remoteHash = change.deleted ? "" : change.blob_hash ?? "";
-      if (preserveConcurrentLocal && !previous.deleted && currentHash !== previous.hash && currentHash !== remoteHash) {
+      const locallyModified = previous
+        ? !previous.deleted && currentHash !== previous.hash && currentHash !== remoteHash
+        : currentHash !== remoteHash;
+      if (preserveConcurrentLocal && locallyModified) {
         await this.preserveConflict(change.path, currentData);
         summary.conflicts += 1;
       }
@@ -119,6 +192,7 @@ export class SyncEngine {
       if (exists) {
         await this.adapter.remove(change.path);
         summary.deletedLocal += 1;
+        if (pathRequiresObsidianRestart(change.path, this.vault.configDir)) summary.restartRequired = true;
       }
       this.data.files[change.path] = stateFromChange(change);
       return;
@@ -130,6 +204,7 @@ export class SyncEngine {
     await this.adapter.writeBinary(change.path, content, { ctime: change.modified_at, mtime: change.modified_at });
     this.data.files[change.path] = stateFromChange(change);
     summary.downloaded += 1;
+    if (pathRequiresObsidianRestart(change.path, this.vault.configDir)) summary.restartRequired = true;
   }
 
   private async preserveConflict(originalPath: string, content: ArrayBuffer): Promise<string> {
