@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -108,6 +109,18 @@ func TestChunkStorageAndManifestAssembly(t *testing.T) {
 	missing, err = db.MissingChunks(ctx, []string{hash, hash})
 	if err != nil || len(missing) != 0 {
 		t.Fatalf("missing after upload: %v err=%v", missing, err)
+	}
+	chunkPath := filepath.Join(db.blobDir, filepath.FromSlash(chunkRelativePath(hash)))
+	if err := os.WriteFile(chunkPath, []byte("xxxxxxxxxxxxx"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing, err = db.MissingChunks(ctx, []string{hash})
+	if err != nil || len(missing) != 1 {
+		t.Fatalf("same-size corruption must be reported missing: %v err=%v", missing, err)
+	}
+	changed, err = db.PutChunk(ctx, hash, data)
+	if err != nil || !changed {
+		t.Fatalf("repair corrupt chunk: changed=%v err=%v", changed, err)
 	}
 	stored, err := db.GetChunk(ctx, hash)
 	if err != nil || string(stored) != string(data) {

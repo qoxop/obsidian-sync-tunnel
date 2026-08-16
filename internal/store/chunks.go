@@ -46,8 +46,8 @@ func (s *Store) MissingChunks(ctx context.Context, hashes []string) ([]string, e
 		if err != nil {
 			return nil, err
 		}
-		info, statErr := os.Stat(filepath.Join(s.blobDir, filepath.FromSlash(chunkRelativePath(hash))))
-		if statErr != nil || !info.Mode().IsRegular() || info.Size() != size {
+		data, readErr := os.ReadFile(filepath.Join(s.blobDir, filepath.FromSlash(chunkRelativePath(hash))))
+		if readErr != nil || int64(len(data)) != size || Hash(data) != hash {
 			missing = append(missing, hash)
 		}
 	}
