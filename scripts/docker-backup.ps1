@@ -22,6 +22,12 @@ try {
     $databasePath = Join-Path $dataDirectory "sync.db"
     if (-not (Test-Path -LiteralPath $databasePath -PathType Leaf)) { throw "Database not found: $databasePath" }
 
+    $dataPrefix = $dataDirectory.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+    $destinationPrefix = $DestinationDirectory.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+    if ($DestinationDirectory -eq $dataDirectory -or $destinationPrefix.StartsWith($dataPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Backup destination must be outside the Compose data directory: $dataDirectory"
+    }
+
     $containerId = (& docker compose ps --quiet sync-server).Trim()
     $wasRunning = $false
     if ($containerId) {
@@ -37,13 +43,23 @@ try {
         $backupPath = Join-Path $DestinationDirectory $stamp
         if (Test-Path -LiteralPath $backupPath) { throw "Backup destination already exists: $backupPath" }
         New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
-        $backupDatabase = Join-Path $backupPath "sync.db"
-        Copy-Item -LiteralPath $databasePath -Destination $backupDatabase
+        $backupData = Join-Path $backupPath "data"
+        New-Item -ItemType Directory -Path $backupData -Force | Out-Null
+        Get-ChildItem -LiteralPath $dataDirectory -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $backupData -Recurse -Force
+        }
+        $backupDatabase = Join-Path $backupData "sync.db"
         $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $backupDatabase).Hash.ToLowerInvariant()
+        $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $databasePath).Hash.ToLowerInvariant()
+        if ($hash -ne $sourceHash) { throw "Backup database hash does not match its source" }
+        $backupFiles = @(Get-ChildItem -LiteralPath $backupData -File -Recurse -Force)
         $metadata = [ordered]@{
+            format_version = 2
             created_at = (Get-Date).ToUniversalTime().ToString("o")
             source = $databasePath
             sha256 = $hash
+            file_count = $backupFiles.Count
+            total_bytes = ($backupFiles | Measure-Object -Property Length -Sum).Sum
             includes_token = $false
             deployment = "docker-compose-bind-mount"
         }
@@ -58,5 +74,5 @@ try {
     Pop-Location
 }
 
-Write-Host "Consistent SQLite backup created: $backupPath"
+Write-Host "Consistent /data backup created: $backupPath"
 Write-Warning "The backup contains plaintext vault content. Copy it to encrypted storage on another device."

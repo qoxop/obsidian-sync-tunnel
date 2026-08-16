@@ -22,6 +22,7 @@
 - [威胁模型](docs/THREAT_MODEL.zh-CN.md)
 - [测试策略](docs/TEST_STRATEGY.zh-CN.md)
 - [从 0.1 升级到 0.2](docs/UPGRADE_0.2.zh-CN.md)
+- [升级到 0.3.0 Beta](docs/UPGRADE_0.3-BETA.zh-CN.md)
 
 ## 通过 GitHub 安装插件
 

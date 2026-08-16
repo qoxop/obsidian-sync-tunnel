@@ -8,7 +8,7 @@ flowchart LR
     B -->|"Outbound Tunnel"| C["Windows cloudflared 服务"]
     C -->|"HTTP 127.0.0.1:8787"| D["Docker Desktop 端口映射"]
     D --> E["Go 容器 :8787"]
-    E -->|"bind mount /data"| F["Windows 数据目录\nsync.db + WAL + logs"]
+    E -->|"bind mount /data"| F["Windows 数据目录\nsync.db + blobs + logs"]
     G["Windows Token 文件"] -->|"read-only Compose secret"| E
 ```
 
@@ -47,9 +47,10 @@ sync.db
 sync.db-wal
 sync.db-shm
 server.jsonl
+blobs/
 ```
 
-服务运行时不要直接复制单独的 `sync.db`。使用 `scripts/docker-backup.ps1` 先优雅停止容器，让 WAL checkpoint 和数据库句柄关闭，再复制。
+服务运行时不要直接复制单独的 `sync.db`。使用 `scripts/docker-backup.ps1` 先优雅停止容器，让 WAL checkpoint 和数据库句柄关闭，再复制完整 `/data`。0.3 起 Chunk 内容位于 `blobs/`，数据库与该目录必须来自同一次一致备份。
 
 ## 端口边界
 
@@ -123,6 +124,8 @@ docker compose restart sync-server
 .\scripts\docker-backup.ps1 -DestinationDirectory 'E:\Backups\ObsidianSync'
 ```
 
+每份备份包含 `data/` 和 `backup.json`。脚本会复验数据库 SHA-256，但备份仍包含明文 Vault 内容，应复制到另一台设备上的加密存储。
+
 ## 升级与回滚原则
 
 升级前先备份，再重新构建：
@@ -132,7 +135,7 @@ docker compose restart sync-server
 .\scripts\docker-up.ps1
 ```
 
-镜像与 bind-mounted 数据分离。代码回滚可以换回旧镜像，但数据库 schema 回滚必须确认兼容；当前 schema 只有幂等 `CREATE TABLE IF NOT EXISTS`，尚未引入不可逆迁移。未来加入 schema migration 后，每个版本必须记录最低可回滚版本。
+镜像与 bind-mounted 数据分离，但镜像回滚不等于数据回滚。0.3 数据库升级到 schema 4，0.2 服务会拒绝打开更高版本数据库；回到 0.2 时必须停止容器，将升级前备份的整个 `data/` 恢复到一个新目录，再让 Compose 指向该目录。不要把旧 `sync.db` 与新 `blobs/` 混用。
 
 ## Cloudflare 连接
 
