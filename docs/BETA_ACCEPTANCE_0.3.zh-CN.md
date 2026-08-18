@@ -86,15 +86,31 @@ Windows 与 macOS 之间的空设备初始化、双向传输、跨平台路径�
 
 服务端进程重启不会丢失 SQLite 中的 Vault revision、历史变更或 tombstone；Tunnel 后的 Windows 与 macOS 客户端均可继续使用原有游标收敛。
 
+## 2026-08-19：客户端退出与持久化任务恢复验收
+
+### 已通过
+
+- [x] macOS 创建单个 64 MiB 探针并在上传中通过 `Command-Q` 正常退出 Obsidian；
+- [x] Obsidian 完全退出后，设备本地 `data.json` 中仍有唯一的 `put` outbox 操作和 `16` 个 Chunk 引用，脚本返回 `CLIENT_RESTART_INTERRUPTED_STATE_PASS`；
+- [x] 中断现场的服务端 revision 仍为 `152`，没有产生不完整文件提交，Chunk 文件总数仍为 `34`；
+- [x] 重新打开同一 Vault 后，插件恢复持久化任务并在 revision `153` 提交文件；服务端清单为 `16 × 4 MiB`，总大小 `67,108,864` 字节；
+- [x] macOS 恢复后 cursor 为 `153`、跟踪记录 `93`，所有持久化队列为 `0`，本地大小和 SHA-256 复验通过，脚本返回 `CLIENT_RESTART_RESUME_PASS`；
+- [x] Windows 流式下载期间 inbox 和临时文件可观察，完成后整文件大小为 `67,108,864` 字节且 SHA-256 与服务端一致；
+- [x] Windows cursor 为 `153`、跟踪记录 `93`，第二次同步全部计数为 `0`，pending paths、pending renames、outbox 和 inbox 均为 `0`，`needsFullScan=false`。
+
+### 结论
+
+客户端在上传任务已经持久化、文件尚未提交时退出，不会丢失任务或产生半成品 revision；重开后能够基于 outbox 恢复并完成提交。另一设备可以流式下载最终文件、复验整文件哈希并收敛。
+
 ## 仍待验证
 
 - [x] 上传大文件时中断网络，恢复后不重复上传已确认 Chunk；
 - [x] Windows 重命名文件后，macOS 只保留新路径且哈希不变；
 - [x] 一次删除至少两个测试文件并在另一端收敛；
-- [ ] 同步中退出并重开 Obsidian，持久化任务可以恢复；
+- [x] 同步中退出并重开 Obsidian，持久化任务可以恢复；
 - [ ] 两台设备离线修改同一路径，恢复后产生冲突副本且不丢版本；
 - [x] 重启服务端容器后，两端再次同步仍为全 `0`；
 - [ ] 明确验证其他插件的敏感 `data.json` 未被 Recommended safe 模式复制；
 - [ ] 验证 Sync Tunnel 自身 `data.json` 始终保持设备本地化。
 
-下一轮从客户端持久化任务恢复场景开始。任一步出现重复删除、哈希不一致或无法收敛时，立即关闭自动同步并保留现场。
+下一轮从双设备离线冲突场景开始。任一步出现重复删除、哈希不一致或无法收敛时，立即关闭自动同步并保留现场。
