@@ -12,7 +12,7 @@ Go 同步服务由 Docker Desktop 承载；SQLite 和日志通过 bind mount 保
 - [ ] 决定 Vault ID，例如 `personal-notes`。同一 Vault 的设备必须一致，不同 Vault 必须不同；
 - [ ] 给每台设备决定唯一 Device ID，例如 `desktop-home`、`laptop-work`、`phone`；
 - [ ] 测试时关闭 Obsidian 官方 Sync、Syncthing、网盘双向同步等其他实时同步器；
-- [ ] 检查其他插件的 `data.json` 是否含明文 API Key。完整同步会把这些文件写入宿主机 SQLite；不能接受时先加入排除列表。
+- [ ] 保持插件默认的 **Recommended safe**。只有确实需要 Full Vault 时才审计其他插件的 `data.json` 是否含明文 API Key；Full Vault 会把这些文件写入宿主机 SQLite，不能接受时不要启用该模式。
 
 ## B. 确认 Docker Desktop
 
@@ -165,6 +165,7 @@ dist\plugin\sync-tunnel\styles.css
 - [ ] API token：在 SecretStorage 组件中新建/选择条目，内容填 C 步 Token；
 - [ ] 若启用了 Access，填写 Client ID，并把 Client Secret 放入另一个 SecretStorage 条目；
 - [ ] 首次测试先关闭 Automatic sync；
+- [ ] Sync profile 保持 **Recommended safe**；
 - [ ] 检查排除列表；
 - [ ] 点击 **Sync now**。
 

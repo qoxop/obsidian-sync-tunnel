@@ -115,7 +115,16 @@ Markdown 和图片使用完全相同的协议，因此不会因为编码、换�
 
 ### 4.6 同步范围与排除
 
-默认同步 `.obsidian`，包括其他插件的 `main.js`、`manifest.json`、样式和 `data.json`。默认排除：
+默认使用 **Recommended safe**：同步笔记、附件，以及 `.obsidian` 中的常用设置、主题、CSS 片段和其他插件的程序文件（`main.js`、`manifest.json`、`styles.css`）。它不会同步其他插件的 `data.json`、工作区布局和未列入白名单的插件私有文件，以降低 API Key、账号状态和设备布局被复制到服务端的风险。
+
+可选模式的边界如下：
+
+- **Notes and attachments**：不进入 `.obsidian`；
+- **Recommended safe**：使用上述安全白名单，是默认和推荐模式；
+- **Full Vault**：同步除内置排除与受保护路径以外的全部 Vault 内容，包括其他插件的 `data.json`，启用前必须审计敏感数据；
+- **Custom exclusions**：同步完整 Vault，但允许用户用 glob 追加排除规则。
+
+所有模式默认排除：
 
 ```text
 .git/**
@@ -124,13 +133,15 @@ Markdown 和图片使用完全相同的协议，因此不会因为编码、换�
 **/Thumbs.db
 ```
 
-另有一个不可取消的设备本地路径：
+Sync Tunnel 自身的整个插件目录是不可取消的设备本地路径：
 
 ```text
-<vault.configDir>/plugins/sync-tunnel/data.json
+<vault.configDir>/plugins/sync-tunnel/**
 ```
 
-用户可以在设置中增加 glob。`.obsidian/workspace*.json` 默认仍同步；若设备布局差异很大，建议用户自行排除。
+其中的 `data.json` 保存 Device ID、游标、版本索引、任务恢复状态和 SecretStorage 引用，绝不能跨设备复制；本插件的程序文件通过 GitHub Release/BRAT 分发，不依赖 Vault 同步。
+
+用户可以在设置中增加 glob。Full Vault 和 Custom exclusions 可能同步 `.obsidian/workspace*.json`；Recommended safe 不同步这些设备布局文件。
 
 ## 5. SQLite 数据设计
 

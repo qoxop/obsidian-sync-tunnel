@@ -954,6 +954,7 @@ describe("SyncEngine snapshot reconciliation", () => {
 function createMemoryAdapter(files: Map<string, ArrayBuffer>): DataAdapter {
   return {
     list: async (directory: string) => {
+      if (directory === ".obsidian") return { files: [], folders: [] };
       if (directory !== "") throw new Error(`Unexpected directory ${directory}`);
       return { files: [...files.keys()], folders: [] };
     },

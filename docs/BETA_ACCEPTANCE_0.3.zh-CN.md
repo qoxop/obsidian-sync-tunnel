@@ -127,6 +127,31 @@ Windows 与 macOS 之间的空设备初始化、双向传输、跨平台路径�
 
 两个独立客户端离线修改同一路径后能够确定性收敛：先提交的内容成为原路径主版本，后提交设备的内容以冲突副本保留并同步给另一端。两个版本均可通过 SHA-256 复验，服务端 revision 连续，所有客户端队列最终归零。
 
+## 2026-08-19：Recommended safe 与设备本地数据隔离验收
+
+### 环境与修复
+
+- 继续使用同一台 Windows 测试机上的两个独立 Vault，连接相同的服务端 Vault ID；
+- 两端均使用 Recommended safe，并关闭 Automatic sync 和 Sync on startup；
+- 在 Vault A 放置未启用的合成插件，包含 `main.js`、`manifest.json`、`styles.css` 和带假密钥标记的 `data.json`；Vault B 预先放置内容不同的本地 `data.json`；
+- 实机测试发现 Vault 根目录枚举可能隐藏当前 `.obsidian`，且旧扫描器会把包含允许文件的目录过早剪枝；修复后扫描器会按同步模式判断目录，并显式扫描 `vault.configDir`；
+- 新增回归测试模拟“根目录不返回配置目录”，验证扫描器仍能发现安全白名单文件，同时不进入插件私有子目录或 Sync Tunnel 自身目录。
+
+### 已通过
+
+- [x] 修复后的 Vault A 全量扫描发现 `30` 个允许的 `.obsidian` 文件，并从 revision `157` 连续提交到 `187`；
+- [x] 服务端这 `30` 条变更仅包含常用设置和第三方插件的 `main.js`、`manifest.json`、`styles.css`，没有任何 `data.json`；
+- [x] 合成插件的三个程序文件分别取得 revision `182`、`183`、`184`，服务端哈希与 Vault A、Vault B 本地 SHA-256 完全一致；
+- [x] Vault B 拉取后保留原有本地 `data.json`；两个 Vault 的合成插件 `data.json` 标记和 SHA-256 均不同；
+- [x] 服务端全历史中没有合成插件的 `data.json`，也从未出现 Sync Tunnel 自身的 `data.json`；
+- [x] 历史 revision `65`–`67` 中存在旧版本上传的 Sync Tunnel 程序文件，但不含状态文件；当前实现保护整个自身插件目录，程序更新改由 GitHub Release/BRAT 分发；
+- [x] 最终两端 cursor 均为 `187`，同步模式均为 Recommended safe，pending paths、outbox 和 inbox 均为 `0`；
+- [x] 两端再次点击 Sync now 均报告上传、下载、重命名、远端删除、本地删除和冲突全部为 `0`。
+
+### 结论
+
+Recommended safe 能同步第三方插件的可执行包和常用 Obsidian 配置，同时把其他插件的 `data.json` 留在各设备本地。Sync Tunnel 自身状态文件也保持设备隔离，Device ID、游标和恢复队列不会通过同步服务复制。实机发现的配置目录遍历缺陷已有自动化回归测试覆盖。
+
 ## 仍待验证
 
 - [x] 上传大文件时中断网络，恢复后不重复上传已确认 Chunk；
@@ -135,7 +160,7 @@ Windows 与 macOS 之间的空设备初始化、双向传输、跨平台路径�
 - [x] 同步中退出并重开 Obsidian，持久化任务可以恢复；
 - [x] 两台设备离线修改同一路径，恢复后产生冲突副本且不丢版本；
 - [x] 重启服务端容器后，两端再次同步仍为全 `0`；
-- [ ] 明确验证其他插件的敏感 `data.json` 未被 Recommended safe 模式复制；
-- [ ] 验证 Sync Tunnel 自身 `data.json` 始终保持设备本地化。
+- [x] 明确验证其他插件的敏感 `data.json` 未被 Recommended safe 模式复制；
+- [x] 验证 Sync Tunnel 自身 `data.json` 始终保持设备本地化。
 
-下一轮从 Recommended safe 模式下的其他插件敏感 `data.json` 隔离开始，并同时验证 Sync Tunnel 自身 `data.json` 始终保持设备本地化。任一步出现敏感数据复制、Device ID 复用或无法收敛时，立即关闭自动同步并保留现场。
+0.3 Beta 当前人工矩阵已全部完成。进入下一阶段前保留两个测试 Vault 和服务端数据，用于版本升级、移动端和长时间稳定性回归；正式 Vault 仍须先做独立备份，测试 Token 在公开发布或真实使用前必须轮换。

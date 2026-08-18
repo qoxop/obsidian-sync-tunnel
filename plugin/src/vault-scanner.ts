@@ -26,7 +26,7 @@ export class VaultScanner {
     const requestedPaths = options.paths
       ? [...new Set([...options.paths].map(normalizeVaultPath))]
       : undefined;
-    const paths = requestedPaths ?? await this.listFiles("");
+    const paths = requestedPaths ?? await this.listAllFiles();
     const includedPaths = paths.filter((path) => !this.isExcluded(path));
     const entries = new Map<string, LocalFile>();
     for (const path of includedPaths.sort((left, right) => left.localeCompare(right))) {
@@ -96,14 +96,46 @@ export class VaultScanner {
     return !/^plugins\/[^/]+\/(?:main\.js|manifest\.json|styles\.css)$/u.test(relative);
   }
 
-  private async listFiles(directory: string): Promise<string[]> {
-    const listed = await this.adapter.list(directory);
+  private async listAllFiles(): Promise<string[]> {
+    const visited = new Set<string>();
+    const files = await this.listFiles("", visited);
+    const configDirectory = normalizeVaultPath(this.vault.configDir ?? "");
+    if (configDirectory && !this.isDirectoryExcluded(configDirectory)) {
+      files.push(...await this.listFiles(configDirectory, visited));
+    }
+    return [...new Set(files)];
+  }
+
+  private async listFiles(directory: string, visited = new Set<string>()): Promise<string[]> {
+    const normalizedDirectory = normalizeVaultPath(directory);
+    if (visited.has(normalizedDirectory)) return [];
+    visited.add(normalizedDirectory);
+    const listed = await this.adapter.list(normalizedDirectory);
     const files = listed.files.map(normalizeVaultPath);
     for (const folder of listed.folders) {
       const normalized = normalizeVaultPath(folder);
-      if (this.isExcluded(`${normalized}/placeholder`) || this.isExcluded(normalized)) continue;
-      files.push(...(await this.listFiles(normalized)));
+      if (this.isDirectoryExcluded(normalized)) continue;
+      files.push(...(await this.listFiles(normalized, visited)));
     }
     return files;
+  }
+
+  private isDirectoryExcluded(path: string): boolean {
+    const normalized = normalizeVaultPath(path);
+    return this.protectedPaths.some((protectedPath) => pathIsWithin(normalized, protectedPath))
+      || this.excludedPatterns.some((pattern) =>
+        globMatches(normalized, pattern) || globMatches(`${normalized}/placeholder`, pattern))
+      || this.profileExcludesDirectory(normalized);
+  }
+
+  private profileExcludesDirectory(path: string): boolean {
+    if (this.syncProfile === "full" || this.syncProfile === "custom") return false;
+    const configDirectory = normalizeVaultPath(this.vault.configDir);
+    if (!pathIsWithin(path, configDirectory)) return false;
+    if (this.syncProfile === "notes") return true;
+    const relative = path.slice(configDirectory.length).replace(/^\/+/, "");
+    if (!relative || relative === "plugins" || /^plugins\/[^/]+$/u.test(relative)) return false;
+    if (pathIsWithin(relative, "themes") || pathIsWithin(relative, "snippets")) return false;
+    return true;
   }
 }

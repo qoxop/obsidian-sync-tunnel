@@ -61,6 +61,62 @@ describe("VaultScanner", () => {
     expect(scanner.isExcluded(".sync-tunnel-backup-11111111-1111-4111-8111-111111111111.tmp")).toBe(true);
   });
 
+  it("descends into recommended profile directories that contain allowed files", async () => {
+    const listings: Record<string, { files: string[]; folders: string[] }> = {
+      // Obsidian adapters can hide the active config directory from the root listing.
+      "": { files: ["note.md"], folders: [] },
+      ".config": {
+        files: [".config/app.json", ".config/workspace.json"],
+        folders: [".config/plugins", ".config/themes", ".config/snippets", ".config/private"]
+      },
+      ".config/plugins": {
+        files: [],
+        folders: [".config/plugins/example", ".config/plugins/sync-tunnel"]
+      },
+      ".config/plugins/example": {
+        files: [
+          ".config/plugins/example/main.js",
+          ".config/plugins/example/manifest.json",
+          ".config/plugins/example/styles.css",
+          ".config/plugins/example/data.json"
+        ],
+        folders: [".config/plugins/example/assets"]
+      },
+      ".config/themes": { files: [], folders: [".config/themes/example"] },
+      ".config/themes/example": { files: [".config/themes/example/theme.css"], folders: [] },
+      ".config/snippets": { files: [".config/snippets/example.css"], folders: [] }
+    };
+    const content = new TextEncoder().encode("content").buffer;
+    const visited: string[] = [];
+    const adapter = {
+      list: async (path: string) => {
+        visited.push(path);
+        const result = listings[path];
+        if (!result) throw new Error(`Unexpected directory ${path}`);
+        return result;
+      },
+      stat: async () => ({ type: "file", ctime: 1, mtime: 1, size: content.byteLength }),
+      readBinary: async () => content
+    } as unknown as DataAdapter;
+    const vault = { configDir: ".config", adapter } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], [".config/plugins/sync-tunnel"], "recommended");
+
+    const result = await scanner.scan();
+
+    expect([...result.keys()]).toEqual([
+      ".config/app.json",
+      ".config/plugins/example/main.js",
+      ".config/plugins/example/manifest.json",
+      ".config/plugins/example/styles.css",
+      ".config/snippets/example.css",
+      ".config/themes/example/theme.css",
+      "note.md"
+    ]);
+    expect(visited).not.toContain(".config/plugins/example/assets");
+    expect(visited).not.toContain(".config/plugins/sync-tunnel");
+    expect(visited).not.toContain(".config/private");
+  });
+
   it("reuses a cached hash when file metadata is unchanged", async () => {
     let readCount = 0;
     const adapter = {
