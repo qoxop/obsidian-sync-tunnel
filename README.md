@@ -25,6 +25,7 @@
 - [从 0.1 升级到 0.2](docs/UPGRADE_0.2.zh-CN.md)
 - [升级到 0.3.0 Beta](docs/UPGRADE_0.3-BETA.zh-CN.md)
 - [macOS 第二设备脚本化验收](docs/MACOS_SECOND_DEVICE_TEST.zh-CN.md)
+- [0.3 Beta 人工验收记录](docs/BETA_ACCEPTANCE_0.3.zh-CN.md)
 
 ## 通过 GitHub 安装插件
 
