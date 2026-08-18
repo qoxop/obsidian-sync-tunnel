@@ -26,6 +26,10 @@ All notable changes to Sync Tunnel are documented here. The project follows Sema
 - Chunked Manifest commits keep the whole-file download path compatible during the 0.3 migration window.
 - Rename events fall back to upload plus delete unless the old baseline and new content hash prove identity.
 
+### Fixed
+
+- Load desktop filesystem and crypto modules through Obsidian's `window.require` bridge, preventing `app://` CORS failures during verified downloads and streamed Chunk transfers.
+
 ## 0.2.0 - 2026-08-16
 
 ### Added

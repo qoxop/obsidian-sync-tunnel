@@ -41,12 +41,14 @@ Invoke-RestMethod http://127.0.0.1:8787/healthz
 只在测试设备上操作：
 
 1. 打开 BRAT 设置，添加 `qoxop/obsidian-sync-tunnel`；
-2. 允许 BRAT 使用最新 prerelease，或选择标签 `0.3.0-beta.1`；
+2. 允许 BRAT 使用最新 prerelease，或选择标签 `0.3.0-beta.2`；
 3. 重载 Obsidian；
 4. 打开 Sync Tunnel 设置并点击 **Test connection**，确认服务端版本为 `0.3.0-beta.1`；
 5. 先查看首次同步预览，再选择“推荐安全模式”。
 
 如果 BRAT 没有显示候选版，先确认 BRAT 为 1.1 或更高版本，并在 GitHub Release 页面确认该标签包含 `main.js`、`manifest.json` 和 `styles.css`。
+
+不要安装插件 `0.3.0-beta.1`：它在 Obsidian 桌面端通过动态 `import()` 加载 Node 文件系统模块，下载校验会被 `app://` CORS 策略拦截。服务端 `0.3.0-beta.1` 与修复后的插件 `0.3.0-beta.2` 协议兼容，不需要为这项客户端修复重建服务器容器。
 
 ## 5. 人工验收清单
 

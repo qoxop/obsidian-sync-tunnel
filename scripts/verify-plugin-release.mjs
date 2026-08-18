@@ -66,6 +66,10 @@ if (checkArtifacts) {
       fail(`missing or empty release artifact: ${relativePath}`);
     }
   }
+  const pluginBundle = readText("plugin/main.js");
+  if (/import\s*\(\s*["']node:/u.test(pluginBundle)) {
+    fail("plugin bundle contains a dynamic node: import, which Obsidian blocks from app:// pages");
+  }
 }
 
 console.log(`Plugin release metadata is valid for ${manifest.id} ${manifest.version}.`);

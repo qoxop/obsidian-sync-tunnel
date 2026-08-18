@@ -1,4 +1,6 @@
-import { mkdtemp, mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { mkdtemp, mkdir, open, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -15,6 +17,18 @@ describe("desktop Chunk streaming", () => {
   it("writes and verifies a Chunk Manifest without DataAdapter.readBinary", async () => {
     const root = await mkdtemp(join(tmpdir(), "sync-tunnel-stream-"));
     const previousDesktop = Platform.isDesktopApp;
+    const runtime = globalThis as unknown as Record<string, unknown>;
+    const previousWindow = runtime["window"];
+    const requestedDesktopModules = new Set<string>();
+    runtime["window"] = {
+      require: (moduleId: string): unknown => {
+        requestedDesktopModules.add(moduleId);
+        if (moduleId === "node:fs") return { createReadStream };
+        if (moduleId === "node:fs/promises") return { open };
+        if (moduleId === "node:crypto") return { createHash };
+        throw new Error(`Unexpected desktop module ${moduleId}`);
+      }
+    };
     Platform.isDesktopApp = true;
     try {
       let adapterReads = 0;
@@ -126,8 +140,11 @@ describe("desktop Chunk streaming", () => {
       expect(new TextDecoder().decode(await readFile(join(root, "large.bin")))).toBe("abcdefghij");
       expect(adapterReads).toBe(0);
       expect(summary.downloaded).toBe(1);
+      expect([...requestedDesktopModules].sort()).toEqual(["node:crypto", "node:fs", "node:fs/promises"]);
     } finally {
       Platform.isDesktopApp = previousDesktop;
+      if (previousWindow === undefined) delete runtime["window"];
+      else runtime["window"] = previousWindow;
       await rm(root, { recursive: true, force: true });
     }
   });

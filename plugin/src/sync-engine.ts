@@ -9,6 +9,19 @@ import { VaultScanner } from "./vault-scanner";
 const FULL_SCAN_INTERVAL_MS = 60 * 60 * 1000;
 const INTEGRITY_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
+type DesktopModuleLoader = (moduleId: string) => unknown;
+
+function requireDesktopModule<T>(moduleId: string): T {
+  const desktopWindow = (globalThis as typeof globalThis & {
+    window?: { require?: DesktopModuleLoader };
+  }).window;
+  const loader = desktopWindow?.require;
+  if (typeof loader !== "function") {
+    throw new Error(`Obsidian desktop Node module loader is unavailable for ${moduleId}`);
+  }
+  return loader(moduleId) as T;
+}
+
 export class SyncEngine {
   private running = false;
   private supportsOperationIDs = false;
@@ -835,10 +848,8 @@ export class SyncEngine {
     this.validateManifest(expectedSize, manifest);
     const adapter = this.adapter;
     if (!(adapter instanceof FileSystemAdapter)) throw new Error("Desktop streaming requires a filesystem adapter");
-    const [{ open }, { createHash }] = await Promise.all([
-      import("node:fs/promises"),
-      import("node:crypto")
-    ]);
+    const { open } = requireDesktopModule<typeof import("node:fs/promises")>("node:fs/promises");
+    const { createHash } = requireDesktopModule<typeof import("node:crypto")>("node:crypto");
     const handle = await open(adapter.getFullPath(download.tempPath), "w", 0o600);
     const digest = createHash("sha256");
     let written = 0;
@@ -1007,10 +1018,8 @@ export class SyncEngine {
     if (!Platform.isDesktopApp || !(adapter instanceof FileSystemAdapter)) {
       return sha256(await this.adapter.readBinary(path));
     }
-    const [{ createReadStream }, { createHash }] = await Promise.all([
-      import("node:fs"),
-      import("node:crypto")
-    ]);
+    const { createReadStream } = requireDesktopModule<typeof import("node:fs")>("node:fs");
+    const { createHash } = requireDesktopModule<typeof import("node:crypto")>("node:crypto");
     const digest = createHash("sha256");
     for await (const chunk of createReadStream(adapter.getFullPath(path))) digest.update(chunk);
     return digest.digest("hex");
