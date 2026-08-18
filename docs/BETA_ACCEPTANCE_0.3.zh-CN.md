@@ -72,6 +72,20 @@ Windows 与 macOS 之间的空设备初始化、双向传输、跨平台路径�
 
 一次同步可以原子地提交多个删除意图，另一设备能够应用全部 tombstone，且不会误删未包含在操作中的相邻测试文件。
 
+## 2026-08-18：服务端容器重启验收
+
+### 已通过
+
+- [x] Windows 对运行中的 Docker Compose `sync-server` 执行重启，容器重新进入 `healthy`；
+- [x] 重启前后的 `149` 条历史变更元数据指纹一致，服务端 latest revision 保持为 `152`；
+- [x] 重启后仍可查询 revision `151` 和 `152` 的两个最新 tombstone；
+- [x] Windows 重启后同步全部计数为 `0`，cursor 为 `152`，pending paths、pending renames、outbox 和 inbox 均为 `0`，`needsFullScan=false`；
+- [x] macOS 通过 Cloudflare Tunnel 重新连接后看到预期 revision `152`，状态脚本返回 `Client state PASS`。
+
+### 结论
+
+服务端进程重启不会丢失 SQLite 中的 Vault revision、历史变更或 tombstone；Tunnel 后的 Windows 与 macOS 客户端均可继续使用原有游标收敛。
+
 ## 仍待验证
 
 - [x] 上传大文件时中断网络，恢复后不重复上传已确认 Chunk；
@@ -79,8 +93,8 @@ Windows 与 macOS 之间的空设备初始化、双向传输、跨平台路径�
 - [x] 一次删除至少两个测试文件并在另一端收敛；
 - [ ] 同步中退出并重开 Obsidian，持久化任务可以恢复；
 - [ ] 两台设备离线修改同一路径，恢复后产生冲突副本且不丢版本；
-- [ ] 重启服务端容器后，两端再次同步仍为全 `0`；
+- [x] 重启服务端容器后，两端再次同步仍为全 `0`；
 - [ ] 明确验证其他插件的敏感 `data.json` 未被 Recommended safe 模式复制；
 - [ ] 验证 Sync Tunnel 自身 `data.json` 始终保持设备本地化。
 
-下一轮从服务端容器重启场景开始。任一步出现重复删除、哈希不一致或无法收敛时，立即关闭自动同步并保留现场。
+下一轮从客户端持久化任务恢复场景开始。任一步出现重复删除、哈希不一致或无法收敛时，立即关闭自动同步并保留现场。
