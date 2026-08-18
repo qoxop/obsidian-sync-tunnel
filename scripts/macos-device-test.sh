@@ -608,9 +608,16 @@ run_guided() {
   fi
 
   pause_for_user "In Obsidian, open this empty Vault and enable Sync Tunnel. Configure the same Server URL and Vault ID as device A, keep this Mac's unique Device ID, bind the API Token in SecretStorage, keep Automatic sync off, click Test, inspect First sync preview, choose Recommended safe, then click Sync now twice. Do not paste any secret into this terminal."
-  status_client || fail "Initial Mac sync has not passed. Fix the reported item and rerun status."
+  while ! status_client; do
+    warn "Initial Mac sync is not ready yet. The plugin creates data.json as soon as it is enabled in the target Vault."
+    pause_for_user "Return to the same target Vault in Obsidian, enable Sync Tunnel if necessary, finish its configuration and first sync, then come back here. Press Control-C if you want to stop instead."
+  done
   create_probe
   pause_for_user "Return to Obsidian. Click Sync now, wait for completion, then click Sync now again and confirm every count is zero."
+  while ! status_client; do
+    warn "The probe sync has not converged yet."
+    pause_for_user "Return to Obsidian, finish both manual syncs, then come back here. Press Control-C if you want to stop instead."
+  done
   verify_probe
 }
 
