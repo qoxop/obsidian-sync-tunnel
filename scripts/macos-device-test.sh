@@ -14,6 +14,9 @@ VERSION="$DEFAULT_VERSION"
 ALLOW_NON_EMPTY=0
 PROBE_SIZE_MIB=5
 TEMP_DIRECTORY=""
+RESUME_RELATIVE=""
+RESUME_HASH=""
+RESUME_SIZE=""
 
 usage() {
   cat <<'EOF'
@@ -25,6 +28,9 @@ Usage:
   macos-device-test.sh status       --vault PATH [--version VERSION]
   macos-device-test.sh create-probe --vault PATH [--probe-size-mib NUMBER]
   macos-device-test.sh verify-probe --vault PATH [--version VERSION]
+  macos-device-test.sh create-resume-probe     --vault PATH --probe-size-mib NUMBER
+  macos-device-test.sh check-resume-interrupted --vault PATH
+  macos-device-test.sh verify-resume-probe     --vault PATH [--version VERSION]
 
 Commands:
   guided       Install the plugin and guide the complete interactive test.
@@ -32,6 +38,9 @@ Commands:
   status       Verify plugin version, configuration, cursor and persistent queues.
   create-probe Create Markdown, Canvas, PNG, Unicode-path and >4 MiB test files.
   verify-probe Verify local hashes and confirmed file revisions after two syncs.
+  create-resume-probe Create a large file for the quit-and-resume acceptance test.
+  check-resume-interrupted Confirm that a quit left a resumable put in the outbox.
+  verify-resume-probe Verify the resumed upload, queues and local content hash.
 
 The script never asks for or stores API Token or Cloudflare secrets. Enter those
 only through Obsidian SecretStorage when the guided flow pauses.
@@ -60,6 +69,14 @@ trap cleanup EXIT HUP INT TERM
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
+}
+
+file_size_bytes() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    stat -f '%z' "$1"
+  else
+    stat -c '%s' "$1"
+  fi
 }
 
 parse_arguments() {
@@ -102,7 +119,7 @@ parse_arguments() {
   done
 
   case "$COMMAND" in
-    guided|prepare|status|create-probe|verify-probe) ;;
+    guided|prepare|status|create-probe|verify-probe|create-resume-probe|check-resume-interrupted|verify-resume-probe) ;;
     help)
       usage
       exit 0
@@ -594,6 +611,228 @@ verify_probe() {
   info "macOS device-B verification PASS"
 }
 
+load_resume_pointer() {
+  local pointer_path="$VAULT_PATH/.obsidian/plugins/$PLUGIN_ID/macos-resume-probe.txt"
+  [[ -f "$pointer_path" ]] || fail "No resume probe pointer found. Run create-resume-probe first."
+  IFS=$'\t' read -r RESUME_RELATIVE RESUME_HASH RESUME_SIZE < "$pointer_path"
+  [[ "$RESUME_RELATIVE" == "$PROBE_ROOT"/client-restart-*/restart-upload.bin ]] \
+    || fail "Unsafe or unexpected resume probe path: $RESUME_RELATIVE"
+  [[ "$RESUME_RELATIVE" != /* && "$RESUME_RELATIVE" != *..* ]] || fail "Unsafe resume probe path"
+  [[ "$RESUME_HASH" =~ ^[0-9a-f]{64}$ ]] || fail "Invalid resume probe hash"
+  [[ "$RESUME_SIZE" =~ ^[0-9]+$ && "$RESUME_SIZE" -gt 0 ]] || fail "Invalid resume probe size"
+}
+
+emit_resume_state() {
+  local data_path="$1"
+  local relative_path="$2"
+  local expected_hash="$3"
+  local expected_size="$4"
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$data_path" "$relative_path" "$expected_hash" "$expected_size" <<'PY'
+import json
+import sys
+
+data_path, relative_path, expected_hash, expected_size_text = sys.argv[1:5]
+expected_size = int(expected_size_text)
+with open(data_path, "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+
+def record(value):
+    return value if isinstance(value, dict) else {}
+
+def count(value):
+    return len(value) if isinstance(value, dict) else 0
+
+outbox = record(data.get("outbox"))
+matches = [
+    operation for operation in outbox.values()
+    if isinstance(operation, dict)
+    and operation.get("kind") == "put"
+    and operation.get("path") == relative_path
+    and operation.get("hash") == expected_hash
+    and operation.get("size") == expected_size
+]
+chunk_counts = [
+    len(operation.get("chunks"))
+    for operation in matches
+    if operation.get("transport") == "chunks" and isinstance(operation.get("chunks"), list)
+]
+state = record(data.get("files")).get(relative_path)
+tracked = (
+    isinstance(state, dict)
+    and state.get("deleted") is not True
+    and state.get("hash") == expected_hash
+    and state.get("size") == expected_size
+    and isinstance(state.get("revision"), int)
+    and state.get("revision") > 0
+)
+
+fields = [
+    ("outbox_match", len(matches)),
+    ("chunk_count", max(chunk_counts, default=0)),
+    ("tracked_match", "true" if tracked else "false"),
+    ("tracked_revision", state.get("revision", 0) if isinstance(state, dict) else 0),
+    ("outbox_total", count(data.get("outbox"))),
+    ("pending_paths", count(data.get("pendingPaths"))),
+    ("inbox", count(data.get("inbox"))),
+    ("pending_renames", count(data.get("pendingRenames"))),
+]
+for key, value in fields:
+    print(f"{key}\t{value}")
+PY
+    return
+  fi
+
+  [[ -x /usr/bin/osascript ]] || fail "Neither python3 nor macOS osascript is available for resume-state validation"
+  /usr/bin/osascript -l JavaScript - "$data_path" "$relative_path" "$expected_hash" "$expected_size" <<'JXA'
+ObjC.import("Foundation");
+
+function readText(path) {
+  const value = $.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null);
+  if (!value) throw new Error("Cannot read JSON file: " + path);
+  return ObjC.unwrap(value);
+}
+
+function run(argv) {
+  const data = JSON.parse(readText(argv[0]));
+  const relativePath = argv[1];
+  const expectedHash = argv[2];
+  const expectedSize = Number(argv[3]);
+  const record = value => value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const count = value => Object.keys(record(value)).length;
+  const outbox = record(data.outbox);
+  const matches = Object.keys(outbox).map(key => outbox[key]).filter(operation =>
+    operation && operation.kind === "put" && operation.path === relativePath
+      && operation.hash === expectedHash && operation.size === expectedSize
+  );
+  const chunkCounts = matches.filter(operation => operation.transport === "chunks" && Array.isArray(operation.chunks))
+    .map(operation => operation.chunks.length);
+  const state = record(data.files)[relativePath];
+  const tracked = Boolean(state && state.deleted !== true && state.hash === expectedHash
+    && state.size === expectedSize && Number.isInteger(state.revision) && state.revision > 0);
+  const fields = [
+    ["outbox_match", matches.length],
+    ["chunk_count", chunkCounts.length ? Math.max.apply(null, chunkCounts) : 0],
+    ["tracked_match", tracked ? "true" : "false"],
+    ["tracked_revision", state && Number.isInteger(state.revision) ? state.revision : 0],
+    ["outbox_total", count(data.outbox)],
+    ["pending_paths", count(data.pendingPaths)],
+    ["inbox", count(data.inbox)],
+    ["pending_renames", count(data.pendingRenames)],
+  ];
+  return fields.map(item => item[0] + "\t" + String(item[1])).join("\n");
+}
+JXA
+}
+
+create_resume_probe() {
+  local plugin_directory="$VAULT_PATH/.obsidian/plugins/$PLUGIN_ID"
+  local pointer_path="$plugin_directory/macos-resume-probe.txt"
+  local timestamp
+  local probe_directory
+  local probe_file
+  local actual_size
+  local actual_hash
+
+  (( PROBE_SIZE_MIB >= 16 )) || fail "The client-restart probe must be at least 16 MiB"
+  status_client || fail "Client state must be settled before creating the client-restart probe."
+  require_command dd
+  require_command shasum
+  require_command stat
+
+  timestamp="$(date '+%Y%m%d-%H%M%S')"
+  RESUME_RELATIVE="$PROBE_ROOT/client-restart-$timestamp/restart-upload.bin"
+  probe_directory="$VAULT_PATH/${RESUME_RELATIVE%/*}"
+  probe_file="$VAULT_PATH/$RESUME_RELATIVE"
+  mkdir -p "$probe_directory"
+  dd if=/dev/urandom of="$probe_file" bs=1048576 count="$PROBE_SIZE_MIB" 2>/dev/null
+  actual_size="$(file_size_bytes "$probe_file")"
+  actual_hash="$(shasum -a 256 "$probe_file" | awk '{print $1}')"
+  printf '%s\t%s\t%s\n' "$RESUME_RELATIVE" "$actual_hash" "$actual_size" > "$pointer_path"
+  chmod 0600 "$pointer_path"
+
+  info "Created a $PROBE_SIZE_MIB MiB client-restart probe."
+  info "In Obsidian, click Sync now and quit Obsidian with Command-Q while the upload is still running."
+  info "After Obsidian has closed, run check-resume-interrupted before reopening it."
+}
+
+check_resume_interrupted() {
+  local plugin_directory="$VAULT_PATH/.obsidian/plugins/$PLUGIN_ID"
+  local data_path="$plugin_directory/data.json"
+  local probe_file
+  local state
+  local outbox_match
+  local chunk_count
+  local tracked_match
+
+  [[ -f "$data_path" ]] || fail "Plugin data is missing: $data_path"
+  load_resume_pointer
+  probe_file="$VAULT_PATH/$RESUME_RELATIVE"
+  [[ -f "$probe_file" ]] || fail "Resume probe file is missing"
+
+  if pgrep -x Obsidian >/dev/null 2>&1; then
+    warn "Obsidian still appears to be running. Quit it before accepting the interrupted state."
+  fi
+
+  state="$(emit_resume_state "$data_path" "$RESUME_RELATIVE" "$RESUME_HASH" "$RESUME_SIZE")"
+  outbox_match="$(summary_value "$state" outbox_match)"
+  chunk_count="$(summary_value "$state" chunk_count)"
+  tracked_match="$(summary_value "$state" tracked_match)"
+  if [[ "$outbox_match" != "1" ]]; then
+    if [[ "$tracked_match" == "true" ]]; then
+      fail "The upload finished before Obsidian quit. Create a new probe and quit earlier."
+    fi
+    fail "No resumable put was persisted for the probe. Create a new probe and retry."
+  fi
+  [[ "$chunk_count" =~ ^[0-9]+$ && "$chunk_count" -gt 1 ]] || fail "The persisted put does not contain a multi-Chunk manifest"
+
+  info "Persisted outbox entry PASS: one Chunk upload with $chunk_count Chunk references."
+  printf 'CLIENT_RESTART_INTERRUPTED_STATE_PASS\n'
+}
+
+verify_resume_probe() {
+  local plugin_directory="$VAULT_PATH/.obsidian/plugins/$PLUGIN_ID"
+  local data_path="$plugin_directory/data.json"
+  local probe_file
+  local actual_hash
+  local actual_size
+  local state
+  local tracked_match
+  local tracked_revision
+  local report_path="$plugin_directory/macos-resume-verification-report.txt"
+
+  require_command shasum
+  require_command stat
+  status_client || fail "Persistent queues have not converged after reopening Obsidian."
+  load_resume_pointer
+  probe_file="$VAULT_PATH/$RESUME_RELATIVE"
+  [[ -f "$probe_file" ]] || fail "Resume probe file is missing"
+  actual_size="$(file_size_bytes "$probe_file")"
+  actual_hash="$(shasum -a 256 "$probe_file" | awk '{print $1}')"
+  [[ "$actual_size" == "$RESUME_SIZE" ]] || fail "Resume probe size changed"
+  [[ "$actual_hash" == "$RESUME_HASH" ]] || fail "Resume probe hash changed"
+
+  state="$(emit_resume_state "$data_path" "$RESUME_RELATIVE" "$RESUME_HASH" "$RESUME_SIZE")"
+  tracked_match="$(summary_value "$state" tracked_match)"
+  tracked_revision="$(summary_value "$state" tracked_revision)"
+  [[ "$tracked_match" == "true" ]] || fail "Resume probe is not confirmed in client state"
+  [[ "$(summary_value "$state" outbox_match)" == "0" ]] || fail "Resume probe still has a persisted outbox entry"
+
+  {
+    printf 'result=PASS\n'
+    printf 'verified_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf 'plugin_version=%s\n' "$VERSION"
+    printf 'confirmed_revision=%s\n' "$tracked_revision"
+    printf 'secrets_included=false\n'
+  } > "$report_path"
+  chmod 0600 "$report_path"
+
+  info "Resumed upload has matching size, SHA-256 and confirmed revision $tracked_revision."
+  info "Safe report written to: $report_path"
+  printf 'CLIENT_RESTART_RESUME_PASS\n'
+}
+
 pause_for_user() {
   local message="$1"
   [[ -t 0 ]] || fail "The guided command needs an interactive terminal. Use the individual subcommands in automation."
@@ -630,4 +869,7 @@ case "$COMMAND" in
   status) status_client ;;
   create-probe) create_probe ;;
   verify-probe) verify_probe ;;
+  create-resume-probe) create_resume_probe ;;
+  check-resume-interrupted) check_resume_interrupted ;;
+  verify-resume-probe) verify_resume_probe ;;
 esac

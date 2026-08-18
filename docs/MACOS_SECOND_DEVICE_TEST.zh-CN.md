@@ -90,7 +90,31 @@ VAULT="$HOME/Documents/Obsidian/SyncTunnelMacTest"
 
 默认不允许非空 Vault。`--allow-non-empty` 仅供已经完成备份并明确知道风险的维护者使用，不应用于首次验收。
 
-## 5. 通过标准
+## 5. 退出并重开 Obsidian 的恢复测试
+
+只在专用测试 Vault 中执行。开始前保存所有正在编辑的笔记，并保持 **Automatic sync** 关闭：
+
+```bash
+"$SCRIPT" create-resume-probe --vault "$VAULT" --probe-size-mib 64
+```
+
+然后在 Obsidian 中点击一次 **Sync now**，确认上传仍在进行时按 `Command-Q` 退出。Obsidian 完全关闭后先不要重开，执行：
+
+```bash
+"$SCRIPT" check-resume-interrupted --vault "$VAULT"
+```
+
+只有出现 `CLIENT_RESTART_INTERRUPTED_STATE_PASS` 才继续。若上传已经在退出前完成，脚本会要求创建新探针并更早退出；这不算功能失败。
+
+重新打开同一 Vault，点击 **Sync now** 等待恢复完成，再点击一次并确认全部计数为 `0`。最后执行：
+
+```bash
+"$SCRIPT" verify-resume-probe --vault "$VAULT"
+```
+
+通过标志为 `CLIENT_RESTART_RESUME_PASS`。脚本同时验证本地大小、SHA-256、已确认 revision 和所有持久化队列，不会输出连接地址、设备标识或密钥。
+
+## 6. 通过标准
 
 Mac 端脚本通过后，还需要让设备 A 手动同步两次，并检查：
 
