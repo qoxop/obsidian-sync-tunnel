@@ -13,7 +13,8 @@
 3. 按[用户配合操作清单](docs/USER_ACTIONS.zh-CN.md)准备测试 Vault、Docker Desktop 和 Cloudflare；
 4. 运行 `scripts/docker-init.ps1` 和 `scripts/docker-up.ps1`；
 5. 如需在其他电脑在线安装插件，阅读[GitHub + BRAT 发布指引](docs/GITHUB_RELEASE.zh-CN.md)；
-6. 在两个测试 Vault 完成人工验收矩阵后，再考虑真实数据。
+6. 使用 Mac 作为第二台测试设备时，可运行[macOS 第二设备脚本化验收](docs/MACOS_SECOND_DEVICE_TEST.zh-CN.md)；
+7. 在两个测试 Vault 完成人工验收矩阵后，再考虑真实数据。
 
 ## 设计与质量文档
 
@@ -23,6 +24,7 @@
 - [测试策略](docs/TEST_STRATEGY.zh-CN.md)
 - [从 0.1 升级到 0.2](docs/UPGRADE_0.2.zh-CN.md)
 - [升级到 0.3.0 Beta](docs/UPGRADE_0.3-BETA.zh-CN.md)
+- [macOS 第二设备脚本化验收](docs/MACOS_SECOND_DEVICE_TEST.zh-CN.md)
 
 ## 通过 GitHub 安装插件
 

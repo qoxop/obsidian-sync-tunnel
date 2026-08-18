@@ -48,6 +48,8 @@ Invoke-RestMethod http://127.0.0.1:8787/healthz
 
 如果 BRAT 没有显示候选版，先确认 BRAT 为 1.1 或更高版本，并在 GitHub Release 页面确认该标签包含 `main.js`、`manifest.json` 和 `styles.css`。
 
+使用 Mac 作为第二台设备时，也可以通过[macOS 第二设备脚本化验收](MACOS_SECOND_DEVICE_TEST.zh-CN.md)直接从 Release 安装固定版本，并自动检查同步状态、探针哈希和服务端确认 revision。
+
 不要安装插件 `0.3.0-beta.1`：它在 Obsidian 桌面端通过动态 `import()` 加载 Node 文件系统模块，下载校验会被 `app://` CORS 策略拦截。服务端 `0.3.0-beta.1` 与修复后的插件 `0.3.0-beta.2` 协议兼容，不需要为这项客户端修复重建服务器容器。
 
 ## 5. 人工验收清单
