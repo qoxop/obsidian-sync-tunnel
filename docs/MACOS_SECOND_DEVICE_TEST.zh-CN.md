@@ -1,6 +1,6 @@
 # macOS 第二设备脚本化验收
 
-本流程用于把一台 Mac 作为设备 B，连接到现有测试 Vault，并验证 `0.3.0-beta.2` 的首次下载、反向上传、大文件分块、路径兼容和持久化队列收敛。它只适用于专用测试 Vault，不能替代备份。
+本流程用于把一台 Mac 作为设备 B，连接到现有测试 Vault，并验证 `0.3.0-beta.3` 的首次下载、反向上传、大文件分块、路径兼容和持久化队列收敛。它只适用于专用测试 Vault，不能替代备份。
 
 脚本直接从 GitHub Release 下载 `main.js`、`manifest.json` 和 `styles.css`，因此不依赖 BRAT。后续可以继续用同一脚本指定新版本，或者在验收完成后改由 BRAT 管理更新。
 
@@ -30,7 +30,7 @@ less "$HOME/Downloads/macos-device-test.sh"
 `guided` 会执行下列操作：
 
 - 拒绝非空 Vault，避免把测试意外指向真实笔记；
-- 通过 HTTPS 下载并校验固定版本 `0.3.0-beta.2` 的插件 ID、版本和必要附件；
+- 通过 HTTPS 下载并校验固定版本 `0.3.0-beta.3` 的插件 ID、版本和必要附件；
 - 更新已有插件前，把整个插件目录备份到 `~/Documents/ObsidianSyncBackups/client-state/`；
 - 不复制设备 A 的 `data.json`，不读取或保存 API Token/Cloudflare Secret；
 - 暂停并等待用户在 Obsidian 中完成 SecretStorage、首次同步预览和同步方向确认；
@@ -85,7 +85,7 @@ VAULT="$HOME/Documents/Obsidian/SyncTunnelMacTest"
 重新下载或更新指定候选版：
 
 ```bash
-"$SCRIPT" prepare --vault "$VAULT" --version 0.3.0-beta.2
+"$SCRIPT" prepare --vault "$VAULT" --version 0.3.0-beta.3
 ```
 
 默认不允许非空 Vault。`--allow-non-empty` 仅供已经完成备份并明确知道风险的维护者使用，不应用于首次验收。

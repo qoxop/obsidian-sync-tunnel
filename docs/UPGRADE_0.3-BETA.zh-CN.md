@@ -41,7 +41,7 @@ Invoke-RestMethod http://127.0.0.1:8787/healthz
 只在测试设备上操作：
 
 1. 打开 BRAT 设置，添加 `qoxop/obsidian-sync-tunnel`；
-2. 允许 BRAT 使用最新 prerelease，或选择标签 `0.3.0-beta.2`；
+2. 允许 BRAT 使用最新 prerelease，或选择标签 `0.3.0-beta.3`；
 3. 重载 Obsidian；
 4. 打开 Sync Tunnel 设置并点击 **Test connection**，确认服务端版本为 `0.3.0-beta.1`；
 5. 先查看首次同步预览，再选择“推荐安全模式”。
@@ -50,7 +50,7 @@ Invoke-RestMethod http://127.0.0.1:8787/healthz
 
 使用 Mac 作为第二台设备时，也可以通过[macOS 第二设备脚本化验收](MACOS_SECOND_DEVICE_TEST.zh-CN.md)直接从 Release 安装固定版本，并自动检查同步状态、探针哈希和服务端确认 revision。
 
-不要安装插件 `0.3.0-beta.1`：它在 Obsidian 桌面端通过动态 `import()` 加载 Node 文件系统模块，下载校验会被 `app://` CORS 策略拦截。服务端 `0.3.0-beta.1` 与修复后的插件 `0.3.0-beta.2` 协议兼容，不需要为这项客户端修复重建服务器容器。
+不要安装插件 `0.3.0-beta.1`：它在 Obsidian 桌面端通过动态 `import()` 加载 Node 文件系统模块，下载校验会被 `app://` CORS 策略拦截。`0.3.0-beta.3` 还修复了 Recommended safe 未显式扫描 Obsidian 配置目录的问题。服务端 `0.3.0-beta.1` 与这些客户端修复协议兼容，不需要重建服务器容器。
 
 ## 5. 人工验收清单
 
