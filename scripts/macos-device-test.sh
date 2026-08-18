@@ -5,7 +5,7 @@ IFS=$'\n\t'
 
 REPOSITORY="qoxop/obsidian-sync-tunnel"
 PLUGIN_ID="sync-tunnel"
-DEFAULT_VERSION="0.3.0-beta.2"
+DEFAULT_VERSION="0.3.0-beta.3"
 PROBE_ROOT="_sync-tunnel-verification"
 
 COMMAND=""
