@@ -1,15 +1,16 @@
 import type {
+  AdminSession,
   AuditEvent,
   BackupResult,
   BackupRun,
+  ConnectivityReport,
   Device,
   DoctorReport,
   GCPlan,
   GCResult,
+  ServerLogEntry,
   ServerStats,
-  Vault,
-  AdminSession,
-  ServerLogEntry
+  Vault
 } from "./types";
 
 interface APIErrorBody {
@@ -113,15 +114,22 @@ export class AdminAPI {
     });
   }
 
+  checkConnectivity(input: { public_url: string; access_client_id?: string; access_client_secret?: string }): Promise<ConnectivityReport> {
+    return this.request("/connectivity/check", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-	const headers = new Headers(init.headers);
-	if (this.token) headers.set("Authorization", `Bearer ${this.token}`);
-	if (init.body) headers.set("Content-Type", "application/json");
+    const headers = new Headers(init.headers);
+    if (this.token) headers.set("Authorization", `Bearer ${this.token}`);
+    if (init.body) headers.set("Content-Type", "application/json");
     const response = await fetch(`/admin/v1${path}`, {
       ...init,
       cache: "no-store",
       credentials: "same-origin",
-	  headers
+      headers
     });
     if (!response.ok) {
       let body: APIErrorBody = {};

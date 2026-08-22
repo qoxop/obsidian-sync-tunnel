@@ -11,7 +11,7 @@ A personal, self-hosted Obsidian sync service. The server runs on your own Windo
 - Syncs notes, images, attachments, Canvas files, themes, CSS, and plugins.
 - Supports Windows, macOS, Android, and iOS.
 - Handles multiple Vaults and devices, resumable transfers, conflicts, and history.
-- Provides a local Web console for Vaults, devices, logs, backups, and maintenance.
+- Provides a local Web console for Vaults, devices, connectivity diagnostics, logs, backups, and maintenance.
 - Persists all server data on the Windows host.
 
 ## Install the server
@@ -31,6 +31,8 @@ Create a Named Tunnel in Cloudflare Zero Trust, install its Windows connector, a
 
 Confirm that `https://sync.example.com/healthz` returns `status: ok`. Never expose port `8788`. A stable hostname requires a domain connected to Cloudflare; Quick Tunnels are only for temporary testing.
 
+If the public URL returns `Error 1033`, especially while Clash Verge TUN is enabled, see [Troubleshooting](docs/TROUBLESHOOTING.en.md#cloudflare-error-1033).
+
 ## Create a Vault and pair a device
 
 Open the local admin page and select **Vaults & devices**. Create a Vault, select **Pair**, and copy the one-time code. Generate a separate pairing code for every device.
@@ -45,7 +47,7 @@ Enable **Sync Tunnel**, then use its setup wizard to enter the Cloudflare URL, V
 
 ## Daily administration
 
-Use <http://127.0.0.1:8788/admin/> to manage Vaults and devices, inspect logs, run data checks, create and verify backups, and execute two-phase garbage collection.
+Use <http://127.0.0.1:8788/admin/> to manage Vaults and devices, check the local service and Cloudflare path, inspect logs, run data checks, create and verify backups, and execute two-phase garbage collection.
 
 Only disaster recovery requires stopping the service. See [Docker deployment and recovery](docs/DOCKER_DEPLOYMENT.zh-CN.md).
 
@@ -56,7 +58,7 @@ Only disaster recovery requires stopping the service. See [Docker deployment and
 - Never route the local admin port through Cloudflare or bind it to a LAN address.
 - Keep an independent copy of real Vaults until the release is fully validated.
 
-Technical details are in [ARCHITECTURE.md](docs/ARCHITECTURE.md), [PROTOCOL_1.0.en.md](docs/PROTOCOL_1.0.en.md), and [TESTING.md](docs/TESTING.md).
+Technical details are in [ARCHITECTURE.md](docs/ARCHITECTURE.md), [PROTOCOL_1.0.en.md](docs/PROTOCOL_1.0.en.md), [TESTING.md](docs/TESTING.md), and [Troubleshooting](docs/TROUBLESHOOTING.en.md).
 
 ## License
 

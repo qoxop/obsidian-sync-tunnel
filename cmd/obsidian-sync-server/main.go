@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -273,6 +274,7 @@ func runHTTPServer(ctx context.Context, cfg config.Config, db *store.Store, admi
 			BackupDirectory: cfg.BackupDirectory,
 			LogPath:         cfg.LogPath,
 			AuthRequired:    cfg.AdminAuth == "token",
+			PublicHealthURL: localHealthURL(cfg.Listen),
 		}, logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
@@ -311,6 +313,18 @@ func runHTTPServer(ctx context.Context, cfg config.Config, db *store.Store, admi
 		return fmt.Errorf("shutdown admin server: %w", adminErr)
 	}
 	return nil
+}
+
+func localHealthURL(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "http://127.0.0.1:8787/healthz"
+	}
+	loopback := "127.0.0.1"
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		loopback = "::1"
+	}
+	return "http://" + net.JoinHostPort(loopback, port) + "/healthz"
 }
 
 func findFlagValue(args []string, name string) string {

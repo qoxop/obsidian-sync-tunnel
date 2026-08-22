@@ -5,7 +5,7 @@ Use dedicated test Vaults and record date, OS, Obsidian/plugin/server versions a
 ## Required matrix
 
 - Preserve 0.x data and keep an encrypted off-machine backup of every real Vault.
-- Start 1.0 RC with fresh Windows data/backup/Admin Token paths. Verify both loopback health endpoints, doctor, stats, Docker health and that Cloudflare routes only to 8787.
+- Start 1.0 RC with fresh Windows data/backup/Admin Token paths. Verify both loopback health endpoints, doctor, stats, connectivity diagnostics, Docker health and that Cloudflare routes only to 8787.
 - Create one logical test Vault. Pair Windows A and B with separate one-time codes. The server must assign each Device ID and SecretStorage must hold the credentials.
 - Use Recommended + safe merge, keep automatic sync disabled, and require two manual syncs with zero counts on the second.
 - Exchange Markdown, Canvas, PNG, PDF, Unicode/space paths, plugin bundles, 5 MiB and 64 MiB binaries in both directions; compare SHA-256.

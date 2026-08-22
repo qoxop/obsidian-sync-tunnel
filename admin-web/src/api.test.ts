@@ -33,4 +33,17 @@ describe("admin API", () => {
     await expect(new AdminAPI("").logs(200)).resolves.toEqual([{ level: "INFO", msg: "ready" }]);
     expect(fetchMock.mock.calls[0]![0]).toBe("/admin/v1/logs?limit=200");
   });
+
+  it("runs a connectivity check without persisting Access credentials", async () => {
+    const report = { checked_at: 1, overall: "healthy", summary: "ok", checks: [] };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(report), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(new AdminAPI("").checkConnectivity({
+      public_url: "https://sync.example.com",
+      access_client_id: "client-id",
+      access_client_secret: "client-secret"
+    })).resolves.toEqual(report);
+    expect(fetchMock.mock.calls[0]![0]).toBe("/admin/v1/connectivity/check");
+    expect(fetchMock.mock.calls[0]![1]).toEqual(expect.objectContaining({ method: "POST" }));
+  });
 });

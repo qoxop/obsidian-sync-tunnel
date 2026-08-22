@@ -85,7 +85,7 @@
 
 ## 管理接口
 
-`/admin/v1` 由本机管理 Web 使用，提供会话模式、Vault 创建/更新、配对码、设备状态、审计、运行日志、统计、doctor、在线备份和两阶段 GC。灾难恢复因需要停服，使用 `scripts/docker-restore.ps1`。
+`/admin/v1` 由本机管理 Web 使用，提供会话模式、Vault 创建/更新、配对码、设备状态、审计、运行日志、统计、doctor、受限公网连接诊断、在线备份和两阶段 GC。连接诊断只接受公开 HTTPS 域名并拒绝重定向、私网/Fake-IP 和 DNS 重绑定。灾难恢复因需要停服，使用 `scripts/docker-restore.ps1`。
 
 ## 错误与重试
 

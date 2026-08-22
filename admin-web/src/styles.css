@@ -16,6 +16,7 @@ body { margin: 0; min-width: 320px; }
 .section-card { margin-top: 18px; }
 .metric-card { height: 100%; border: 0; box-shadow: 0 5px 22px rgba(44, 42, 73, .06); }
 .health-note { margin: 16px 0 0 !important; }
+.diagnostic-suggestion { margin: 6px 0 0 !important; }
 .full-width { width: 100%; }
 .nested-table { margin-top: 16px; }
 .confirm-hash { margin-top: 16px; overflow-wrap: anywhere; }

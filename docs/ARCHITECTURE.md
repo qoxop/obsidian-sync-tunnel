@@ -112,6 +112,7 @@ flowchart TB
 - 插件同步状态机通过 `SyncApiClient` 和 Obsidian `DataAdapter` 访问外部世界；
 - UI 负责收集确认和展示状态，不决定 revision、冲突或删除语义；
 - 管理 Web 只调用 Admin API，不直接访问 SQLite；灾难恢复脚本只在停服后替换完整数据集。
+- 连接诊断由 Admin API 发起受限 HTTPS 探测：只允许公开域名和标准端口，拒绝回环、私网、Fake-IP、重定向和任意路径，避免形成 SSRF 通道；Cloudflare Access 凭据仅驻留于单次请求。
 
 ## 4. 服务端进程架构
 
@@ -407,7 +408,7 @@ flowchart LR
 
 管理 Web 通过 Admin API 创建和校验在线一致性备份；`docker-restore.ps1` 再次校验后停止容器，将旧数据移动到可恢复目录，再启动新数据并等待健康检查。备份不包含管理凭据，但包含明文 Vault 内容，必须复制到另一台设备上的加密存储。
 
-`doctor` 检查 SQLite、Chunk 缺失、Chunk 损坏和孤儿文件。`stats` 提供 Vault、设备、文件、历史、Blob 和 Chunk 计数。日志使用 JSONL，记录 request ID、路由、状态和耗时，不记录 Token、正文或完整路径；管理 Web 可读取最近的结构化日志。
+`doctor` 检查 SQLite、Chunk 缺失、Chunk 损坏和孤儿文件。完整性扫描使用独立的只读数据库连接，避免阻塞首页同时发起的 `stats` 等常规请求；Chunk 校验采用有上限的并发流式哈希，避免将文件整体读入内存。成功结果在进程内缓存 5 分钟，同一时刻的重复请求合并为一次检查，响应结构和管理页面交互保持不变。`stats` 提供 Vault、设备、文件、历史、Blob 和 Chunk 计数。日志使用 JSONL，记录 request ID、路由、状态和耗时，不记录 Token、正文或完整路径；管理 Web 可读取最近的结构化日志。
 
 ## 15. 限制、配额与故障语义
 

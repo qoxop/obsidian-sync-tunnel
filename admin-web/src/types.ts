@@ -117,3 +117,20 @@ export interface ServerLogEntry {
   msg?: string;
   [key: string]: unknown;
 }
+
+export type ConnectivityCheckStatus = "pass" | "warning" | "fail" | "info";
+
+export interface ConnectivityCheck {
+  id: string;
+  label: string;
+  status: ConnectivityCheckStatus;
+  detail: string;
+  suggestion?: string;
+}
+
+export interface ConnectivityReport {
+  checked_at: number;
+  overall: "healthy" | "warning" | "error";
+  summary: string;
+  checks: ConnectivityCheck[];
+}

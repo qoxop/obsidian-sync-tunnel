@@ -11,8 +11,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -375,12 +377,30 @@ func (s *Store) ExecuteGCPlan(ctx context.Context, planID, expectedHash string) 
 
 func (s *Store) Doctor(ctx context.Context) (DoctorReport, error) {
 	report := DoctorReport{OK: true}
-	if err := s.db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&report.Integrity); err != nil {
+	integrityDB, err := sql.Open("sqlite", s.databasePath)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	integrityDB.SetMaxOpenConns(1)
+	integrityDB.SetMaxIdleConns(0)
+	defer integrityDB.Close()
+	if _, err := integrityDB.ExecContext(ctx, `PRAGMA query_only = ON`); err != nil {
+		return DoctorReport{}, err
+	}
+	if _, err := integrityDB.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
+		return DoctorReport{}, err
+	}
+	if err := integrityDB.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&report.Integrity); err != nil {
 		return DoctorReport{}, err
 	}
 	if report.Integrity != "ok" {
 		report.OK = false
 	}
+	type chunkTarget struct {
+		hash string
+		path string
+	}
+	targets := make([]chunkTarget, 0)
 	known := make(map[string]bool)
 	rows, err := s.db.QueryContext(ctx, `SELECT hash, relative_path FROM chunks ORDER BY hash`)
 	if err != nil {
@@ -392,23 +412,71 @@ func (s *Store) Doctor(ctx context.Context) (DoctorReport, error) {
 			rows.Close()
 			return DoctorReport{}, err
 		}
-		known[filepath.Clean(filepath.Join(s.blobDir, filepath.FromSlash(relative)))] = true
-		data, err := os.ReadFile(filepath.Join(s.blobDir, filepath.FromSlash(relative)))
-		if errors.Is(err, os.ErrNotExist) {
-			report.MissingChunkHashes = append(report.MissingChunkHashes, hash)
+		path := filepath.Clean(filepath.Join(s.blobDir, filepath.FromSlash(relative)))
+		known[path] = true
+		targets = append(targets, chunkTarget{hash: hash, path: path})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return DoctorReport{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return DoctorReport{}, err
+	}
+
+	type chunkResult struct {
+		missing bool
+		corrupt bool
+		err     error
+	}
+	results := make([]chunkResult, len(targets))
+	workers := min(runtime.GOMAXPROCS(0), 4, len(targets))
+	if workers > 0 {
+		jobs := make(chan int)
+		var group sync.WaitGroup
+		group.Add(workers)
+		for range workers {
+			go func() {
+				defer group.Done()
+				for index := range jobs {
+					actual, hashErr := hashFile(targets[index].path)
+					if errors.Is(hashErr, os.ErrNotExist) {
+						results[index].missing = true
+						continue
+					}
+					if hashErr != nil {
+						results[index].err = hashErr
+						continue
+					}
+					results[index].corrupt = actual != targets[index].hash
+				}
+			}()
+		}
+		for index := range targets {
+			select {
+			case jobs <- index:
+			case <-ctx.Done():
+				close(jobs)
+				group.Wait()
+				return DoctorReport{}, ctx.Err()
+			}
+		}
+		close(jobs)
+		group.Wait()
+	}
+	for index, result := range results {
+		if result.err != nil {
+			return DoctorReport{}, result.err
+		}
+		if result.missing {
+			report.MissingChunkHashes = append(report.MissingChunkHashes, targets[index].hash)
 			report.OK = false
-			continue
 		}
-		if err != nil {
-			rows.Close()
-			return DoctorReport{}, err
-		}
-		if Hash(data) != hash {
-			report.CorruptChunkHashes = append(report.CorruptChunkHashes, hash)
+		if result.corrupt {
+			report.CorruptChunkHashes = append(report.CorruptChunkHashes, targets[index].hash)
 			report.OK = false
 		}
 	}
-	rows.Close()
 	root := filepath.Join(s.blobDir, "chunks")
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil || entry.IsDir() {

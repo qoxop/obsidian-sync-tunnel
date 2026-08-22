@@ -31,6 +31,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 - 一次性配对码；
 - 设备查看、退役和撤销；
 - 服务统计、运行日志和审计日志；
+- Cloudflare Tunnel、DNS 和公网同步入口连接诊断；
 - SQLite 与 Chunk 完整性检查；
 - 在线一致性备份及校验；
 - 两阶段垃圾回收预览与执行。
@@ -45,6 +46,8 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 | `8788` | 管理页面 | 仅服务器电脑本机 |
 
 两个端口都必须保持绑定到 `127.0.0.1`。Cloudflare Tunnel 只能指向 `http://127.0.0.1:8787`，绝不能转发 `8788`。
+
+公网出现 Cloudflare `Error 1033`，尤其是同时使用 Clash Verge TUN 时，参见 [故障排查](TROUBLESHOOTING.zh-CN.md#cloudflare-返回-1033)。
 
 默认管理模式不要求 Admin Token，因为管理端口不会离开本机。若本机为多人共用，可重新初始化时使用 `-AdminAuth token`。
 

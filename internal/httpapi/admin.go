@@ -22,6 +22,8 @@ type AdminAPI struct {
 	backupDirectory string
 	logPath         string
 	authRequired    bool
+	connectivity    connectivityRunner
+	doctorCache     *doctorResultCache
 }
 
 type AdminOptions struct {
@@ -29,12 +31,14 @@ type AdminOptions struct {
 	BackupDirectory string
 	LogPath         string
 	AuthRequired    bool
+	PublicHealthURL string
 }
 
 func NewAdmin(db *store.Store, token string, options AdminOptions, logger *slog.Logger) http.Handler {
 	api := &AdminAPI{
 		store: db, tokenHash: sha256.Sum256([]byte(token)), logger: logger,
 		backupDirectory: options.BackupDirectory, logPath: options.LogPath, authRequired: options.AuthRequired,
+		connectivity: newConnectivityChecker(options.PublicHealthURL), doctorCache: newDoctorResultCache(5 * time.Minute),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -56,6 +60,7 @@ func NewAdmin(db *store.Store, token string, options AdminOptions, logger *slog.
 	mux.Handle("POST /admin/v1/backups/verify", api.auth(http.HandlerFunc(api.verifyBackup)))
 	mux.Handle("GET /admin/v1/logs", api.auth(http.HandlerFunc(api.listLogs)))
 	mux.Handle("GET /admin/v1/stats", api.auth(http.HandlerFunc(api.stats)))
+	mux.Handle("POST /admin/v1/connectivity/check", api.auth(http.HandlerFunc(api.checkConnectivity)))
 	if ui := newAdminUIHandler(options.StaticDirectory); ui != nil {
 		mux.Handle("GET /admin/", ui)
 		mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
@@ -290,10 +295,15 @@ func (a *AdminAPI) executeGC(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *AdminAPI) doctor(w http.ResponseWriter, r *http.Request) {
-	report, err := a.store.Doctor(r.Context())
+	report, cached, err := a.doctorCache.Get(r.Context(), a.store.Doctor)
 	if err != nil {
 		writeStoreError(w, err)
 		return
+	}
+	if cached {
+		w.Header().Set("X-Sync-Doctor-Cache", "HIT")
+	} else {
+		w.Header().Set("X-Sync-Doctor-Cache", "MISS")
 	}
 	writeJSON(w, http.StatusOK, report)
 }

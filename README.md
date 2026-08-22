@@ -43,6 +43,8 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 
 稳定域名需要有一个已接入 Cloudflare 的域名；Quick Tunnel 只适合临时测试。
 
+如果公网出现 `Error 1033`，或服务器同时运行 Clash Verge TUN，请参见 [故障排查](docs/TROUBLESHOOTING.zh-CN.md#cloudflare-返回-1033)。
+
 ## 创建 Vault 和配对设备
 
 打开本机管理页面，进入 **Vault 与设备**：
@@ -75,6 +77,7 @@ Vault ID 是服务器上的同步空间名称，不是本地文件夹路径。�
 - 创建或暂停 Vault；
 - 生成配对码、查看或撤销设备；
 - 查看容量、运行日志和审计日志；
+- 一键检查本地服务、Cloudflare Tunnel、DNS 和公网入口；
 - 执行数据完整性检查；
 - 创建和校验在线备份；
 - 预览并执行安全垃圾回收。
@@ -98,6 +101,7 @@ Docker Desktop 默认会自动重启服务。只有灾难恢复需要停服操�
 - [人工验收清单](docs/MANUAL_ACCEPTANCE_1.0.zh-CN.md)
 - [GitHub 与 BRAT 发布](docs/GITHUB_RELEASE.zh-CN.md)
 - [威胁模型](docs/THREAT_MODEL.zh-CN.md)
+- [故障排查](docs/TROUBLESHOOTING.zh-CN.md)
 
 ## License
 

@@ -34,7 +34,7 @@ Invoke-RestMethod http://127.0.0.1:8787/healthz
 Invoke-RestMethod http://127.0.0.1:8788/healthz
 ```
 
-打开本机管理页面，在概览中检查统计，并在“维护与备份”中运行数据检查。通过标准：容器 healthy；两个 health 均为 `ok`；doctor 正常；管理页面可加载。确认 Cloudflare Public Hostname 仍只指向 `http://127.0.0.1:8787`，绝不能指向 `8788`。
+打开本机管理页面，在概览中检查统计，在“维护与备份”中运行数据检查，并在“连接诊断”中验证公网同步地址。通过标准：容器 healthy；两个 health 均为 `ok`；doctor 正常；本地服务、公网 DNS 和公网 `/healthz` 通过；管理页面可加载。确认 Cloudflare Public Hostname 仍只指向 `http://127.0.0.1:8787`，绝不能指向 `8788`。
 
 ## 2. 创建逻辑 Vault 与设备 A
 

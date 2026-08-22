@@ -34,7 +34,7 @@ Mutations carry `X-Operation-ID` (UUID), `X-Base-Revision`, `X-Modified-At`, and
 
 ## Admin API
 
-`/admin/v1` powers the local Web console for Vaults, pairing codes, device status, audit, runtime logs, statistics, doctor, online backups, and two-phase GC. Disaster recovery remains the only offline script operation.
+`/admin/v1` powers the local Web console for Vaults, pairing codes, device status, audit, runtime logs, statistics, doctor, restricted public connectivity diagnostics, online backups, and two-phase GC. Connectivity probes accept only public HTTPS hostnames and reject redirects, private/Fake-IP targets, and DNS rebinding. Disaster recovery remains the only offline script operation.
 
 ## Errors and retries
 

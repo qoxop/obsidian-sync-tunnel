@@ -4,18 +4,28 @@ All notable changes to Sync Tunnel are documented here. Semantic Versioning comp
 
 ## Unreleased
 
+## 1.0.0-rc.2 - 2026-08-22
+
 ### Administration
 
 - Added a loopback-only React/Ant Design management console for Vaults, devices, pairing, statistics, audit, runtime logs, doctor, backups, verification, and two-phase GC.
 - Made Admin Token authentication optional and disabled by default; tokenless mode still enforces loopback Host and same-origin requests, while Docker publishes the admin port only on `127.0.0.1`.
 - Replaced routine administration scripts with one `scripts/setup.ps1` entry point and the local Web console. Offline disaster recovery remains a dedicated script because a running service cannot safely replace its own SQLite data set.
 - Rewrote the README as a short installation and usage guide, with technical details kept in the architecture and protocol documents.
+- Added a local connectivity diagnostics page for the service, public DNS, Cloudflare Tunnel edge DNS, connector readiness, Access-protected health checks, and common Origin errors.
+
+### Reliability and security
+
+- Restricted connectivity probes to public HTTPS hostnames on port 443, rejected private, loopback, documentation, benchmark, and Clash Fake-IP ranges, disabled redirects and proxy inheritance, and revalidated every dial target to prevent SSRF and DNS rebinding.
+- Moved SQLite integrity checks to an independent read-only connection so a full doctor run no longer blocks normal statistics or sync requests.
+- Added a five-minute successful doctor-result cache with concurrent request coalescing, plus bounded streaming Chunk verification to reduce repeated disk scans and peak memory use.
+- Documented a persistent Clash Verge TUN/Fake-IP configuration for Cloudflare Error 1033 without requiring users to disable TUN.
 
 ### Delivery
 
 - Limited public distribution to the unofficial Obsidian plugin through GitHub Releases and BRAT.
 - Removed GHCR, multi-architecture image publication, Cosign signing, and the scheduled Nightly workflow. The server remains source-distributed and is built locally from the Dockerfile/Compose files at the same immutable Tag as the plugin.
-- Grouped weekly Dependabot updates by ecosystem, limited each ecosystem to one open PR, and disabled automatic rebases to reduce redundant workflow runs.
+- Grouped Dependabot updates by ecosystem, limited each ecosystem to one open PR, disabled automatic rebases, pinned the plugin to the compatible TypeScript major, and added monthly management-Web dependency updates.
 - Removed the superseded native Windows service deployment path and pre-1.0 process documents; Docker Desktop is now the single supported server deployment model.
 - Replaced planning and point-in-time test records with a code-aligned architecture document, durable test guide, and task-oriented README.
 

@@ -18,6 +18,13 @@ npm test
 npm run build
 Set-Location ..
 
+Set-Location .\admin-web
+npm ci
+npm run typecheck
+npm test
+npm run build
+Set-Location ..
+
 node .\scripts\verify-plugin-release.mjs
 docker compose config --quiet
 ```
@@ -45,7 +52,13 @@ docker compose config --quiet
 - Bearer 鉴权、Vault 约束、scope 与撤销；
 - 请求体限制、限速和结构化错误；
 - 文件、Chunk、重命名、批量删除、ACK、历史与恢复；
-- Vault 与设备管理、审计、统计、doctor、GC 和备份。
+- Vault 与设备管理、审计、统计、doctor 缓存、GC、备份和受限连接诊断。
+
+### 管理 Web
+
+- Admin Token 请求头和错误解析；
+- 连接诊断请求不持久化 Cloudflare Access 凭据；
+- TypeScript 类型检查与生产构建。
 
 ### Obsidian 插件
 
@@ -102,7 +115,7 @@ docker build --build-arg VERSION=local-test --tag obsidian-sync-tunnel:local-tes
 
 `.github/workflows/ci.yml` 在 push 和 pull request 上执行：
 
-- Windows：Go test/vet、插件安装/typecheck/test/build、发布元数据验证；
+- Windows：Go test/vet、插件与管理 Web 安装/typecheck/test/build、发布元数据验证；
 - Linux：`go test -race ./...`；
 - Linux：从当前 Dockerfile 构建服务镜像，但不推送；
 - CodeQL：Go 与 JavaScript/TypeScript 静态分析。
