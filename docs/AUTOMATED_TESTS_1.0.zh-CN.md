@@ -82,7 +82,7 @@ go test .\internal\store -run '^TestScaleTenThousandFiles$' -count=1 -v
 - Ubuntu race job：`go test -race ./... -count=1`。本地 Windows 若为 `CGO_ENABLED=0`，race 命令不可用；
 - Docker job：macOS 脚本 `bash -n` 和镜像构建；
 - CodeQL：Go 与 JavaScript/TypeScript；
-- Dependabot：Go、npm、GitHub Actions 和 Docker 依赖更新。
+- Dependabot：Go、npm、GitHub Actions 和 Docker 按生态分组，每组每周最多一个 PR，关闭自动 rebase 以避免重复触发 CI。
 
 项目不运行定时 Nightly，也不在 CI 中推送服务端镜像。10,000 文件规模测试按需在本地显式执行；常规 CI 仍执行一次不推送的 Dockerfile 构建，防止本地部署链路退化。
 
