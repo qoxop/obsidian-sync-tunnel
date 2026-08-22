@@ -59,7 +59,7 @@ jobs:
         run: bash -n scripts/macos-device-test.sh
       - uses: docker/setup-buildx-action@v3
       - name: Build server image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: false
