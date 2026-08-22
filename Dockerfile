@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:22-bookworm-slim AS admin-web-builder
+FROM node:26-bookworm-slim AS admin-web-builder
 
 WORKDIR /src/admin-web
 COPY admin-web/package.json admin-web/package-lock.json ./
@@ -9,7 +9,7 @@ COPY admin-web/index.html admin-web/tsconfig.json admin-web/vite.config.ts ./
 COPY admin-web/src ./src
 RUN npm test && npm run build
 
-FROM golang:1.25.0-bookworm AS builder
+FROM golang:1.26.6-bookworm AS builder
 
 ARG VERSION=dev
 WORKDIR /src
