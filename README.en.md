@@ -2,36 +2,82 @@
 
 English | [简体中文](README.md)
 
-A personal, self-hosted full-Vault sync system for Obsidian. The Go/SQLite server runs in Windows Docker Desktop with Windows bind-mounted persistence, Cloudflare Tunnel provides the HTTPS ingress, and the Obsidian plugin supports desktop and mobile clients.
+A personal, self-hosted full-Vault synchronization system for Obsidian. The Go/SQLite server runs in Windows Docker Desktop with bind-mounted persistence, Cloudflare Tunnel provides HTTPS ingress, and an unofficial Obsidian plugin supports desktop and mobile clients.
 
-The current code is `1.0.0-rc.1`: implementation and automated verification are complete, but manual multi-platform acceptance is still required. Do not use it as the only copy of a real Vault or as a replacement for independent backups.
+Current version: `1.0.0-rc.1`. Keep an independent backup and do not use this release candidate as the only copy of a real Vault.
 
-## 1.0 scope
+## Features
 
-- Single administrator, multiple logical Vaults, multiple devices.
-- Notes, attachments, Canvas, themes, CSS, and other plugin bundles; Full Vault can also synchronize other plugins' `data.json`.
-- Sync Tunnel's own state, credentials, workspaces, caches, diagnostics, and temporary files remain device-local.
-- One-time pairing, server-assigned device IDs, scoped per-device credentials, rotation and revocation.
-- Stable snapshots, optimistic revisions, persistent outbox/inbox, Chunk resume, conflicts, history/restore, ACK watermarks, two-phase GC, online backup/verify/restore, quotas and audit.
-- Plaintext server storage in 1.0; E2EE is deferred to 2.0.
+- One administrator, multiple logical Vaults and multiple devices.
+- Notes, Canvas, images, attachments, common Obsidian settings, themes, CSS and other plugin files.
+- Notes, Recommended, Full and Custom sync profiles; Recommended is the safe default.
+- First-sync preview with safe merge, remote-primary and local-primary choices.
+- SHA-256 content addressing, 4 MiB Chunks, missing-Chunk resume and integrity checks.
+- Persistent outbox/inbox recovery after network, Obsidian or server interruption.
+- Optimistic revisions, idempotent operations, conflict copies, atomic rename and batch delete.
+- History/restore, per-device credentials, revocation, quotas, audit, doctor, ACK-aware GC and verified backups.
 
-There is exactly one final `/api/v1` protocol. All 0.x clients, global API tokens, old capabilities, and old client sync state are intentionally incompatible. Upgrade the server and plugin together, use fresh 1.0 server data, and pair every device again.
+Sync Tunnel's own plugin directory and `data.json` always remain device-local. Full mode may copy secrets stored by other plugins in their `data.json`; use Recommended unless you explicitly accept that risk.
 
-## Documentation
+## Architecture
 
-- [Architecture](docs/ARCHITECTURE_1.0.en.md)
-- [Final protocol](docs/PROTOCOL_1.0.en.md)
-- [Upgrade from 0.x](docs/UPGRADE_TO_1.0.en.md)
-- [Manual acceptance](docs/MANUAL_ACCEPTANCE_1.0.en.md)
-- [Release checklist](docs/RELEASE_CHECKLIST_1.0.en.md)
-- [Unofficial GitHub/BRAT plugin distribution (Chinese)](docs/GITHUB_RELEASE.zh-CN.md)
-- [Chinese Docker operations](docs/DOCKER_DEPLOYMENT.zh-CN.md)
-- [Chinese automated test evidence](docs/AUTOMATED_TESTS_1.0.zh-CN.md)
-- [Threat model](docs/THREAT_MODEL.zh-CN.md)
+```mermaid
+flowchart LR
+    O[Obsidian plugin] -->|HTTPS + device credential| C[Cloudflare Tunnel / Access]
+    C --> F[Windows cloudflared]
+    F -->|127.0.0.1:8787| P[Public sync API]
+    A[Windows admin scripts] -->|127.0.0.1:8788 + Admin Token| M[Admin API]
+    P --> G[Go server]
+    M --> G
+    G --> S[(SQLite WAL + Chunk storage)]
+```
 
-Only the unofficial Obsidian plugin is distributed through GitHub Releases/BRAT. The project does not publish server binaries or container images; build the server locally from the repository Dockerfile at the same immutable Tag as the plugin.
+Only the plugin is distributed through GitHub Releases/BRAT. Server binaries and public container images are not published; build the server locally from the same immutable Git Tag as the plugin.
 
-## Developer gate
+The [complete architecture document](docs/ARCHITECTURE.md) and most operating documentation are currently in Simplified Chinese.
+
+## Quick start
+
+On the Windows server:
+
+```powershell
+git clone --branch 1.0.0-rc.1 --depth 1 https://github.com/qoxop/obsidian-sync-tunnel.git
+Set-Location .\obsidian-sync-tunnel
+.\scripts\docker-init.ps1
+.\scripts\docker-up.ps1
+
+Invoke-RestMethod http://127.0.0.1:8787/healthz
+Invoke-RestMethod http://127.0.0.1:8788/healthz
+
+.\scripts\admin.ps1 -CreateVault -VaultId personal-notes -DisplayName 'Personal notes'
+.\scripts\admin.ps1 -CreatePairing -VaultId personal-notes
+```
+
+Configure a stable Cloudflare Public Hostname with origin `http://127.0.0.1:8787`. Never expose the Admin API on port `8788`.
+
+On each Obsidian device:
+
+1. Install BRAT and add `https://github.com/qoxop/obsidian-sync-tunnel` as a beta plugin.
+2. Enable Sync Tunnel and open its setup wizard.
+3. Enter the HTTPS Server URL, logical Vault ID, device name and a newly generated one-time pairing code.
+4. Keep the Recommended profile, test the connection, review First sync preview and choose Safe merge.
+5. Run Sync now twice; the second run should report zero changes.
+6. Generate a different pairing code for every additional device.
+
+The Admin Token is only for local Windows scripts. Never enter it into Obsidian.
+
+## Operations
+
+```powershell
+.\scripts\docker-logs.ps1 -Follow
+.\scripts\admin.ps1 -Doctor
+.\scripts\admin.ps1 -Stats
+.\scripts\docker-backup.ps1 -KeepLast 7
+```
+
+SQLite, paths, content, history, Chunks and backups are plaintext in 1.0. Use disk encryption, strict ACLs and an encrypted off-machine backup. Read the [Chinese deployment guide](docs/DOCKER_DEPLOYMENT.zh-CN.md) before restore or GC operations.
+
+## Development
 
 ```powershell
 go test ./...
@@ -45,17 +91,8 @@ npm test
 npm run build
 ```
 
-Opt-in 10,000-file test:
+See [testing](docs/TESTING.md), the [1.0 protocol](docs/PROTOCOL_1.0.en.md), [manual acceptance](docs/MANUAL_ACCEPTANCE_1.0.en.md), and [security policy](SECURITY.md).
 
-```powershell
-$env:OBSIDIAN_SYNC_SCALE_TEST='1'
-go test .\internal\store -run '^TestScaleTenThousandFiles$' -count=1 -v
-```
+## License
 
-## Safe deployment defaults
-
-- Public sync API: `127.0.0.1:8787`; this is the only Cloudflare origin.
-- Local Admin API: `127.0.0.1:8788`; never expose it through Cloudflare.
-- Data: `runtime-data/`; backups: `runtime-backups/`; local admin secret: `secrets/admin-token.txt`.
-- Device credentials stay in Obsidian SecretStorage; the server stores hashes only.
-- SQLite, Chunks, history and backups contain plaintext Vault data. Use disk encryption, strict ACLs, and an encrypted off-machine backup.
+[MIT](LICENSE)

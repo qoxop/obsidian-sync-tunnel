@@ -14,7 +14,7 @@ Use dedicated test Vaults and record date, OS, Obsidian/plugin/server versions a
 - Interrupt network, Obsidian upload/download, server restart, Docker Desktop restart and Windows restart. Persistent queues must resume and converge.
 - Rotate a device credential, revoke a device, suspend a Vault, exercise quota/file/disk limits, inspect sanitized audit/diagnostics, and review two-phase GC.
 - Create, verify and restore an online backup. Recheck doctor, revision, probe hashes and client convergence; replicate the backup to encrypted off-machine storage.
-- Pair a Mac using `macos-device-test.sh`. Test at least one Android or iOS physical device for foreground/background, network switch, attachment, conflict and memory-limit behavior.
+- Pair a Mac as a second device and verify bidirectional convergence, interrupted transfer recovery, rename and deletion. Test at least one Android or iOS physical device for foreground/background, network switch, attachment, conflict and memory-limit behavior.
 
 ## RC pass gate
 

@@ -20,7 +20,6 @@ $binary = Join-Path $temporaryRoot "obsidian-sync-server.exe"
 $adminTokenFile = Join-Path $temporaryRoot "admin-token.txt"
 $adminToken = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(36)).TrimEnd("=").Replace("+", "-").Replace("/", "_")
 [IO.File]::WriteAllText($adminTokenFile, $adminToken, [Text.UTF8Encoding]::new($false))
-$previousToken = $env:OBSIDIAN_SYNC_ADMIN_TOKEN
 $process = $null
 try {
     Push-Location $repoRoot
@@ -31,11 +30,11 @@ try {
         Pop-Location
     }
 
-    $env:OBSIDIAN_SYNC_ADMIN_TOKEN = $adminToken
     $arguments = @(
         "serve", "--listen", "127.0.0.1:$PublicPort",
         "--admin-listen", "127.0.0.1:$AdminPort",
         "--database", (Join-Path $temporaryRoot "sync.db"),
+        "--admin-token-file", $adminTokenFile,
         "--log", (Join-Path $temporaryRoot "server.jsonl"),
         "--max-file-bytes", "67108864", "--min-free-bytes", "0"
     )
@@ -62,11 +61,6 @@ try {
     if ($process -and -not $process.HasExited) {
         Stop-Process -Id $process.Id -Force
         $process.WaitForExit()
-    }
-    if ($null -eq $previousToken) {
-        [Environment]::SetEnvironmentVariable("OBSIDIAN_SYNC_ADMIN_TOKEN", $null, "Process")
-    } else {
-        $env:OBSIDIAN_SYNC_ADMIN_TOKEN = $previousToken
     }
     $adminToken = ""
     if (Test-Path -LiteralPath $temporaryRoot) {

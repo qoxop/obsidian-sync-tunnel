@@ -7,7 +7,7 @@
 | 8787 | `127.0.0.1` | `cloudflared` / 本机健康检查 | 是 |
 | 8788 | `127.0.0.1` | Windows 管理脚本 | 否，禁止 |
 
-容器内部两个端口显式监听 `0.0.0.0` 供 Docker NAT 使用，但 Compose 的 `host_ip` 固定为 `127.0.0.1`。服务要求两个独立的显式 non-loopback opt-in，防止原生部署误暴露管理端。
+容器内部两个端口显式监听 `0.0.0.0` 供 Docker NAT 使用，但 Compose 的 `host_ip` 固定为 `127.0.0.1`。服务要求两个独立的显式 non-loopback opt-in，防止直接运行二进制时误暴露公共或管理端口。
 
 最终镜像使用非 root distroless、只读根文件系统、删除 capabilities、`no-new-privileges`，`/tmp` 为小型 tmpfs。`/data` 和 `/backups` 是 Windows bind mount；Admin Token 通过只读 Compose secret 挂入 `/run/secrets/sync_admin_token`。
 
@@ -40,7 +40,7 @@ secrets/admin-token.txt      本机 Admin Token，不用于客户端
   -Version '1.0.0-rc.1'
 ```
 
-已有 `.env` 默认不会覆盖。1.0 不兼容升级必须先保留旧数据，再用新目录和 `-ForceConfig`，见[升级指引](UPGRADE_TO_1.0.zh-CN.md)。
+未显式传入 `-Version` 时，初始化脚本自动读取当前源码的 `manifest.json`，避免容器版本与检出的 Tag 不一致。已有 `.env` 默认不会覆盖；需要改动端口或持久化路径时先备份并审查，再使用 `-ForceConfig` 重新生成。
 
 ## 验证监听和容器
 

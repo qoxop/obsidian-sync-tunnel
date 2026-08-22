@@ -1,6 +1,6 @@
 # Sync Tunnel 1.0 人工验收清单
 
-本文只用于 `1.0.0-rc.1` 专用测试数据。每项记录日期、平台、Obsidian 版本、插件版本、服务镜像版本、结果和脱敏证据。任何 FAIL 都停止进入下一阶段。
+本文用于当前 1.0 release candidate 的专用测试数据。每项记录日期、平台、Obsidian 版本、插件版本、服务镜像版本、结果和脱敏证据。任何 FAIL 都停止进入下一阶段。
 
 ## 0. 安全准备
 
@@ -16,12 +16,17 @@
 不要覆盖旧数据，使用新目录：
 
 ```powershell
+$VERSION = (Get-Content .\manifest.json -Raw | ConvertFrom-Json).version
+$DATA_DIR = Join-Path $PWD 'runtime-data-acceptance'
+$BACKUP_DIR = Join-Path $PWD 'runtime-backups-acceptance'
+$ADMIN_TOKEN_FILE = Join-Path $PWD 'secrets\admin-token-acceptance.txt'
+
 .\scripts\docker-down.ps1
 .\scripts\docker-init.ps1 `
-  -DataDirectory 'C:\Users\z\Documents\ChatGPT\obsidian-sync-tunnel\runtime-data-1.0-rc1' `
-  -BackupDirectory 'C:\Users\z\Documents\ChatGPT\obsidian-sync-tunnel\runtime-backups-1.0-rc1' `
-  -AdminTokenFile 'C:\Users\z\Documents\ChatGPT\obsidian-sync-tunnel\secrets\admin-token-1.0-rc1.txt' `
-  -Version '1.0.0-rc.1' `
+  -DataDirectory $DATA_DIR `
+  -BackupDirectory $BACKUP_DIR `
+  -AdminTokenFile $ADMIN_TOKEN_FILE `
+  -Version $VERSION `
   -ForceConfig
 .\scripts\docker-up.ps1
 ```
@@ -32,8 +37,8 @@
 docker compose ps
 Invoke-RestMethod http://127.0.0.1:8787/healthz
 Invoke-RestMethod http://127.0.0.1:8788/healthz
-.\scripts\admin.ps1 -Doctor -AdminTokenFile .\secrets\admin-token-1.0-rc1.txt
-.\scripts\admin.ps1 -Stats -AdminTokenFile .\secrets\admin-token-1.0-rc1.txt
+.\scripts\admin.ps1 -Doctor -AdminTokenFile $ADMIN_TOKEN_FILE
+.\scripts\admin.ps1 -Stats -AdminTokenFile $ADMIN_TOKEN_FILE
 ```
 
 通过标准：容器 healthy；两个 health 均为 `ok`；doctor `ok=true`；`docker compose port` 显示宿主机为 `127.0.0.1`。确认 Cloudflare Public Hostname 仍只指向 `http://127.0.0.1:8787`，绝不能指向 `8788`。
@@ -41,7 +46,6 @@ Invoke-RestMethod http://127.0.0.1:8788/healthz
 ## 2. 创建逻辑 Vault 与设备 A
 
 ```powershell
-$ADMIN_TOKEN_FILE = '.\secrets\admin-token-1.0-rc1.txt'
 .\scripts\admin.ps1 -CreateVault -VaultId test-1-0 -DisplayName '1.0 acceptance' -AdminTokenFile $ADMIN_TOKEN_FILE
 .\scripts\admin.ps1 -CreatePairing -VaultId test-1-0 -AdminTokenFile $ADMIN_TOKEN_FILE
 ```
@@ -55,7 +59,7 @@ $ADMIN_TOKEN_FILE = '.\secrets\admin-token-1.0-rc1.txt'
 5. 使用 Recommended，首次模式选择“安全合并”；
 6. 暂时关闭自动同步，点击连接测试，再手动同步两次。
 
-通过标准：连接显示协议 1/服务版本 `1.0.0-rc.1`；第二次上传/下载/删除/冲突为 0；Activity 完成；设置中显示服务端分配的设备 ID；客户端 `data.json` 不包含设备 Token 或 Access Secret 明文。
+通过标准：连接显示协议 1，服务版本等于 `$VERSION`；第二次上传/下载/删除/冲突为 0；Activity 完成；设置中显示服务端分配的设备 ID；客户端 `data.json` 不包含设备 Token 或 Access Secret 明文。
 
 ## 3. Windows 同机双客户端收敛
 
@@ -126,7 +130,7 @@ $ADMIN_TOKEN_FILE = '.\secrets\admin-token-1.0-rc1.txt'
 
 ## 8. macOS 与移动真机
 
-macOS 按[macOS 第二设备验收](MACOS_SECOND_DEVICE_TEST.zh-CN.md)使用新的配对码。Android/iOS 至少一台真机完成：首次配对、前后台切换、Wi-Fi/蜂窝切换、拍照附件、Unicode 路径、冲突、删除恢复、32 MiB 默认移动限制和重启收敛。
+macOS 使用新的配对码作为第二设备，完成双向收敛、断网续传、重命名、批量删除以及客户端/服务端重启恢复。Android/iOS 至少一台真机完成：首次配对、前后台切换、Wi-Fi/蜂窝切换、拍照附件、Unicode 路径、冲突、删除恢复、32 MiB 默认移动限制和重启收敛。
 
 移动端不得调用 Node API；超过移动限制必须在传输前明确拒绝，不能导致 Obsidian 崩溃。iOS 与 Android 均未覆盖时，不得把 1.0 标为全平台稳定，可在 Release 明确标记未验证平台。
 

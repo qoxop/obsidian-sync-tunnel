@@ -21,7 +21,6 @@ import (
 	"obsidian-sync-tunnel/internal/config"
 	"obsidian-sync-tunnel/internal/httpapi"
 	"obsidian-sync-tunnel/internal/store"
-	"obsidian-sync-tunnel/internal/winservice"
 )
 
 var version = "dev"
@@ -206,7 +205,6 @@ func serve(args []string) error {
 	fs.Int64Var(&cfg.RateBytesPerMinute, "rate-bytes-per-minute", cfg.RateBytesPerMinute, "per-device uploaded byte limit")
 	fs.BoolVar(&cfg.AllowNonLoopback, "allow-non-loopback", cfg.AllowNonLoopback, "allow binding beyond loopback (for an isolated container network)")
 	fs.BoolVar(&cfg.AllowAdminNonLoopback, "allow-admin-non-loopback", cfg.AllowAdminNonLoopback, "allow admin binding inside an isolated container; host publication must remain loopback-only")
-	windowsService := fs.Bool("windows-service", false, "run under the Windows Service Control Manager")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -242,18 +240,9 @@ func serve(args []string) error {
 			return fmt.Errorf("open log file: %w", err)
 		}
 		defer logFile.Close()
-		if *windowsService {
-			logOutput = logFile
-		} else {
-			logOutput = io.MultiWriter(os.Stdout, logFile)
-		}
+		logOutput = io.MultiWriter(os.Stdout, logFile)
 	}
 	logger := slog.New(slog.NewJSONHandler(logOutput, nil))
-	if *windowsService {
-		return winservice.Run("ObsidianSyncTunnel", func(ctx context.Context) error {
-			return runHTTPServer(ctx, cfg, db, adminToken, logger)
-		})
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

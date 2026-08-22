@@ -5,7 +5,7 @@
 - Clean, reviewed diff; no runtime `/api/v2`, `X-Device-ID`, legacy capabilities or global sync-token code.
 - Go tests/vet, isolated smoke test, plugin install/typecheck/tests/build, 10k-file test, Docker build/Compose, release metadata and artifacts all pass.
 - Windows CI, Ubuntu race, CodeQL, Dependabot and secret scanning have no blockers.
-- README, architecture, protocol, upgrade, threat model and acceptance docs match the implementation.
+- README, architecture, protocol, deployment, testing, threat model and acceptance docs match the implementation.
 
 ## GitHub administrator gate
 

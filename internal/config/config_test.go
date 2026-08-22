@@ -1,6 +1,11 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestValidateRequiresLoopback(t *testing.T) {
 	t.Parallel()
@@ -56,5 +61,27 @@ func TestResourceLimitValidation(t *testing.T) {
 		if err := cfg.Validate(); err == nil {
 			t.Fatal("invalid resource limit was accepted")
 		}
+	}
+}
+
+func TestResolveAdminTokenRequiresASecretFile(t *testing.T) {
+	t.Setenv("OBSIDIAN_SYNC_ADMIN_TOKEN", strings.Repeat("x", 64))
+	cfg := Default()
+	if _, err := cfg.ResolveAdminToken(); err == nil {
+		t.Fatal("environment-only Admin Token was accepted")
+	}
+
+	token := strings.Repeat("t", 48)
+	path := filepath.Join(t.TempDir(), "admin-token.txt")
+	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.AdminTokenFile = path
+	resolved, err := cfg.ResolveAdminToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != token {
+		t.Fatal("Admin Token file was not trimmed and returned exactly")
 	}
 }

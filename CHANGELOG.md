@@ -9,6 +9,8 @@ All notable changes to Sync Tunnel are documented here. Semantic Versioning comp
 - Limited public distribution to the unofficial Obsidian plugin through GitHub Releases and BRAT.
 - Removed GHCR, multi-architecture image publication, Cosign signing, and the scheduled Nightly workflow. The server remains source-distributed and is built locally from the Dockerfile/Compose files at the same immutable Tag as the plugin.
 - Grouped weekly Dependabot updates by ecosystem, limited each ecosystem to one open PR, and disabled automatic rebases to reduce redundant workflow runs.
+- Removed the superseded native Windows service deployment path and pre-1.0 process documents; Docker Desktop is now the single supported server deployment model.
+- Replaced planning and point-in-time test records with a code-aligned architecture document, durable test guide, and task-oriented README.
 
 ## 1.0.0-rc.1 - 2026-08-19
 

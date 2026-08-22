@@ -9,13 +9,24 @@ param(
 	[int]$AdminHostPort = 8788,
     [ValidateRange(1024, [int64]::MaxValue)]
     [int64]$MaxFileBytes = 67108864,
-    [string]$Version = "1.0.0-rc.1",
+    [string]$Version = "",
 	[switch]$ForceConfig
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $envPath = Join-Path $repoRoot ".env"
+
+if (-not $Version) {
+    $manifestPath = Join-Path $repoRoot "manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Missing manifest.json; cannot determine the source version"
+    }
+    $Version = [string](Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).version
+}
+if ($Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') {
+    throw "Invalid source version: $Version"
+}
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw "Docker CLI was not found. Start Docker Desktop and try again."

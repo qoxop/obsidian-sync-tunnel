@@ -106,11 +106,8 @@ func (c Config) Validate() error {
 }
 
 func (c Config) ResolveAdminToken() (string, error) {
-	if value := strings.TrimSpace(os.Getenv("OBSIDIAN_SYNC_ADMIN_TOKEN")); value != "" {
-		return value, nil
-	}
 	if c.AdminTokenFile == "" {
-		return "", errors.New("set admin_token_file or OBSIDIAN_SYNC_ADMIN_TOKEN")
+		return "", errors.New("admin_token_file is required")
 	}
 	content, err := os.ReadFile(c.AdminTokenFile)
 	if err != nil {

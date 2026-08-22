@@ -13,7 +13,7 @@
 - [ ] Docker build 和 Compose config；
 - [ ] `node scripts/verify-plugin-release.mjs 1.0.0-rc.1 --artifacts`；
 - [ ] CI、Ubuntu race、CodeQL 和 Dependabot 无阻塞项；
-- [ ] Changelog、README、协议、升级、威胁模型和人工验收文档与代码一致。
+- [ ] Changelog、README、架构、协议、部署、测试、威胁模型和人工验收文档与代码一致。
 
 ## B. GitHub 仓库设置（管理员人工）
 
