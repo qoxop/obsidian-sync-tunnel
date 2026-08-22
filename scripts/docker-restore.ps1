@@ -8,13 +8,19 @@ $ErrorActionPreference = "Stop"
 if (-not $ConfirmRestore) { throw "Pass -ConfirmRestore after reviewing the restore target" }
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $backup = [System.IO.Path]::GetFullPath($BackupDirectory)
-& (Join-Path $PSScriptRoot "docker-verify-backup.ps1") -BackupDirectory $backup
 
 Push-Location $repoRoot
 try {
     $config = ((& docker compose config --format json) -join "`n") | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) { throw "Could not resolve Compose configuration" }
     $dataMount = $config.services."sync-server".volumes | Where-Object { $_.target -eq "/data" } | Select-Object -First 1
+	$backupMount = $config.services."sync-server".volumes | Where-Object { $_.target -eq "/backups" } | Select-Object -First 1
+	$backupRoot = [System.IO.Path]::GetFullPath([string]$backupMount.source)
+	$backupRelative = [System.IO.Path]::GetRelativePath($backupRoot, $backup)
+	if ($backupRelative -eq ".." -or $backupRelative.StartsWith("..$([System.IO.Path]::DirectorySeparatorChar)")) { throw "Backup must be inside the configured backup directory" }
+	$containerBackup = "/backups/" + $backupRelative.Replace("\", "/")
+	& docker compose exec --no-TTY sync-server /app/obsidian-sync-server verify-backup --directory $containerBackup | Out-Null
+	if ($LASTEXITCODE -ne 0) { throw "Backup verification failed" }
     $data = [System.IO.Path]::GetFullPath([string]$dataMount.source)
     $parent = Split-Path -Parent $data
     if (-not $parent -or $data -eq [System.IO.Path]::GetPathRoot($data)) { throw "Refusing a broad restore target: $data" }

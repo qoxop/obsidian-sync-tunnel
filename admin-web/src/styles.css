@@ -1,0 +1,29 @@
+:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f5f6fa; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+.app-layout { min-height: 100vh; }
+.app-sider { position: sticky !important; top: 0; height: 100vh; border-right: 1px solid #eceef3; box-shadow: 2px 0 18px rgba(40, 36, 80, .04); }
+.app-brand { height: 74px; display: flex; align-items: center; gap: 12px; padding: 16px 20px; white-space: nowrap; overflow: hidden; }
+.app-brand small { display: block; color: #8a91a3; margin-top: 2px; }
+.brand-icon-small, .brand-icon { display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, #7857ff, #4f2cd9); box-shadow: 0 8px 20px rgba(109, 74, 255, .25); }
+.brand-icon-small { width: 34px; height: 34px; min-width: 34px; border-radius: 11px; }
+.brand-icon { width: 52px; height: 52px; border-radius: 16px; font-size: 24px; }
+.collapse-button { position: absolute; bottom: 18px; left: 16px; }
+.app-header { height: 64px; padding: 0 28px; display: flex; align-items: center; justify-content: flex-end; gap: 12px; background: rgba(255, 255, 255, .88); border-bottom: 1px solid #eceef3; backdrop-filter: blur(12px); }
+.local-badge { padding-block: 4px !important; }
+.app-content { padding: 28px; max-width: 1500px; width: 100%; margin: 0 auto; }
+.page-title { margin-top: 0 !important; margin-bottom: 4px !important; }
+.section-card { margin-top: 18px; }
+.metric-card { height: 100%; border: 0; box-shadow: 0 5px 22px rgba(44, 42, 73, .06); }
+.health-note { margin: 16px 0 0 !important; }
+.full-width { width: 100%; }
+.nested-table { margin-top: 16px; }
+.confirm-hash { margin-top: 16px; overflow-wrap: anywhere; }
+.centered { min-height: 100vh; display: grid; place-items: center; }
+.spin-space { width: 220px; height: 70px; }
+.login-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 20% 10%, #ede8ff 0, transparent 35%), #f5f6fa; }
+.login-card { width: min(480px, 100%); box-shadow: 0 24px 80px rgba(57, 43, 130, .14); }
+.brand-lockup { display: flex; align-items: center; gap: 16px; }
+.brand-lockup h2 { margin: 0 !important; }
+.login-note { margin-bottom: 0 !important; }
+@media (max-width: 720px) { .app-content { padding: 18px 14px; } .app-header { padding: 0 14px; } .local-badge .ant-alert-message { display: none; } }

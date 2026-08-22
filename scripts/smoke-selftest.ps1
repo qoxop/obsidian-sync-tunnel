@@ -33,6 +33,7 @@ try {
     $arguments = @(
         "serve", "--listen", "127.0.0.1:$PublicPort",
         "--admin-listen", "127.0.0.1:$AdminPort",
+		"--admin-auth", "token",
         "--database", (Join-Path $temporaryRoot "sync.db"),
         "--admin-token-file", $adminTokenFile,
         "--log", (Join-Path $temporaryRoot "server.jsonl"),
@@ -48,12 +49,6 @@ try {
         Start-Sleep -Milliseconds 250
     }
     if (-not $ready) { throw "Temporary server did not become healthy" }
-
-    & (Join-Path $PSScriptRoot "admin.ps1") -CreateVault -VaultId cli-managed -DisplayName "CLI managed" -AdminPort $AdminPort -AdminTokenFile $adminTokenFile | Out-Null
-    & (Join-Path $PSScriptRoot "admin.ps1") -UpdateVault -VaultId cli-managed -DisplayName "CLI managed" -VaultStatus suspended -QuotaBytes 4096 -MaxFiles 20 -AdminPort $AdminPort -AdminTokenFile $adminTokenFile | Out-Null
-    $vaultResponse = & (Join-Path $PSScriptRoot "admin.ps1") -ListVaults -AdminPort $AdminPort -AdminTokenFile $adminTokenFile
-    $managedVault = @($vaultResponse.vaults) | Where-Object { $_.id -eq "cli-managed" }
-    if (-not $managedVault -or $managedVault.status -ne "suspended") { throw "Admin CLI lifecycle failed" }
 
     & (Join-Path $PSScriptRoot "smoke-test.ps1") -PublicUrl "http://127.0.0.1:$PublicPort" -AdminUrl "http://127.0.0.1:$AdminPort" -AdminToken $adminToken
     Write-Host "ISOLATED_SMOKE_SELFTEST_PASS"

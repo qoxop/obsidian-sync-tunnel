@@ -8,9 +8,11 @@ $ErrorActionPreference = "Stop"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $distPath = Join-Path $repoRoot "dist"
 $pluginPath = Join-Path $repoRoot "plugin"
+$adminWebPath = Join-Path $repoRoot "admin-web"
 $rootManifestPath = Join-Path $repoRoot "manifest.json"
 $pluginManifestPath = Join-Path $pluginPath "manifest.json"
 $serverOutput = Join-Path $distPath "server\obsidian-sync-server.exe"
+$adminWebOutput = Join-Path $distPath "server\admin-web"
 $pluginOutput = Join-Path $distPath "plugin\sync-tunnel"
 $releaseOutput = Join-Path $distPath "release"
 
@@ -64,6 +66,23 @@ try {
     Pop-Location
 }
 
+Push-Location $adminWebPath
+try {
+	if (-not $SkipInstall) {
+		& npm.cmd ci
+		if ($LASTEXITCODE -ne 0) { throw "Admin Web npm ci failed" }
+	}
+	& npm.cmd run typecheck
+	if ($LASTEXITCODE -ne 0) { throw "Admin Web typecheck failed" }
+	& npm.cmd test
+	if ($LASTEXITCODE -ne 0) { throw "Admin Web tests failed" }
+	& npm.cmd run build
+	if ($LASTEXITCODE -ne 0) { throw "Admin Web build failed" }
+} finally {
+	Pop-Location
+}
+Copy-Item -LiteralPath (Join-Path $adminWebPath "dist") -Destination $adminWebOutput -Recurse
+
 Copy-Item -LiteralPath (Join-Path $pluginPath "main.js") -Destination $pluginOutput
 Copy-Item -LiteralPath $rootManifestPath -Destination $pluginOutput
 Copy-Item -LiteralPath (Join-Path $pluginPath "styles.css") -Destination $pluginOutput
@@ -82,6 +101,7 @@ try {
 
 Write-Host "Build complete"
 Write-Host "  Server: $serverOutput"
+Write-Host "  Admin Web: $adminWebOutput"
 Write-Host "  Plugin: $pluginOutput"
 Write-Host "  GitHub Release assets: $releaseOutput"
 Write-Host "  Plugin ZIP: $pluginZip"

@@ -7,7 +7,7 @@
 ## 2. 需要保护的资产
 
 - Vault 文件内容、文件名、目录结构和历史版本；
-- 本地 Admin Token、每设备凭据、一次性配对码和 Cloudflare Access Secret；
+- 可选的本地 Admin Token、每设备凭据、一次性配对码和 Cloudflare Access Secret；
 - 设备身份、Vault 标识和操作审计；
 - SQLite、Chunk 存储、日志和备份；
 - 插件发布包、服务端源码构建和升级链路。
@@ -38,7 +38,7 @@
 | 威胁 | 1.0 缓解措施 | 剩余风险 |
 |---|---|---|
 | 互联网扫描和撞库 | Tunnel、Access Service Token、每设备高熵凭据、限速 | Cloudflare 或凭据配置错误仍可能暴露入口 |
-| 凭据泄露 | SecretStorage、服务端哈希、只读 Admin secret、scope、轮换和撤销 | 已获得设备凭据的攻击者在撤销前可访问对应 Vault |
+| 凭据泄露 | SecretStorage、服务端哈希、可选只读 Admin secret、scope、轮换和撤销 | 已获得设备凭据的攻击者在撤销前可访问对应 Vault |
 | 宿主机磁盘被读取 | Windows ACL、BitLocker、最小容器权限、加密异机备份 | 服务器在线且主机被攻破时明文可见 |
 | 路径穿越 | 服务端规范化、拒绝绝对路径和 `..`、不跟随外部符号链接 | 平台路径语义差异仍需客户端预检 |
 | 恶意大文件或请求洪泛 | 配额、单请求限制、Chunk 限制、并发和速率限制 | 自托管主机资源有限，仍可能暂时不可用 |
@@ -52,10 +52,10 @@
 ## 5. 安全默认值
 
 - 宿主机端口只发布到 `127.0.0.1`；
-- 管理端点使用独立 localhost 监听，不进入公共 Tunnel；
+- 管理端点使用独立 localhost 监听、回环 Host 与同源 Origin 校验，不进入公共 Tunnel；多人共用主机可启用 Token；
 - Cloudflare Access 作为推荐的第二层认证；
 - 默认不同步 Sync Tunnel 自身目录、工作区状态、缓存、日志和临时文件；
-- 设备凭据不进入插件 `data.json`；Admin Token 不进入 Compose 环境变量、镜像层或 Git；
+- 设备凭据不进入插件 `data.json`；启用时 Admin Token 不进入 Compose 环境变量、镜像层或 Git；
 - 不启用客户端遥测；
 - 备份不包含 Token，并明确标记其中含有明文 Vault 数据；
 - 新设备首次接入只生成预览，不立即传播删除。

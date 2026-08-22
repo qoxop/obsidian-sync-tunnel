@@ -430,6 +430,16 @@ type BackupManifest struct {
 	Files         map[string]string `json:"files"`
 }
 
+type BackupRun struct {
+	ID           string `json:"id"`
+	Destination  string `json:"destination"`
+	Status       string `json:"status"`
+	ManifestHash string `json:"manifest_hash,omitempty"`
+	CreatedAt    int64  `json:"created_at"`
+	CompletedAt  int64  `json:"completed_at,omitempty"`
+	ErrorText    string `json:"error_text,omitempty"`
+}
+
 func (s *Store) Backup(ctx context.Context, destination string) (BackupManifest, error) {
 	s.maintenance.Lock()
 	defer s.maintenance.Unlock()
@@ -489,6 +499,27 @@ func (s *Store) Backup(ctx context.Context, destination string) (BackupManifest,
 		VALUES(?, ?, 'completed', ?, ?, ?)`, runID, abs, Hash(encoded), manifest.CreatedAt, time.Now().UnixMilli())
 	_ = s.RecordAudit(ctx, "backup.completed", "", "", "admin", "", map[string]any{"manifest_hash": Hash(encoded), "file_count": len(manifest.Files)})
 	return manifest, nil
+}
+
+func (s *Store) ListBackupRuns(ctx context.Context, limit int) ([]BackupRun, error) {
+	if limit < 1 || limit > 1000 {
+		return nil, errors.New("backup limit must be between 1 and 1000")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, destination, status, COALESCE(manifest_hash,''), created_at, COALESCE(completed_at,0), COALESCE(error_text,'')
+		FROM backup_runs ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]BackupRun, 0)
+	for rows.Next() {
+		var run BackupRun
+		if err := rows.Scan(&run.ID, &run.Destination, &run.Status, &run.ManifestHash, &run.CreatedAt, &run.CompletedAt, &run.ErrorText); err != nil {
+			return nil, err
+		}
+		result = append(result, run)
+	}
+	return result, rows.Err()
 }
 
 func VerifyBackup(directory string) (BackupManifest, error) {

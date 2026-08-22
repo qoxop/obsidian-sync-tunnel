@@ -1,5 +1,14 @@
 # syntax=docker/dockerfile:1.7
 
+FROM node:22-bookworm-slim AS admin-web-builder
+
+WORKDIR /src/admin-web
+COPY admin-web/package.json admin-web/package-lock.json ./
+RUN npm ci
+COPY admin-web/index.html admin-web/tsconfig.json admin-web/vite.config.ts ./
+COPY admin-web/src ./src
+RUN npm test && npm run build
+
 FROM golang:1.25.0-bookworm AS builder
 
 ARG VERSION=dev
@@ -26,6 +35,7 @@ LABEL org.opencontainers.image.title="Obsidian Sync Tunnel" \
 WORKDIR /app
 COPY --from=builder --chown=65532:65532 /out/obsidian-sync-server /app/obsidian-sync-server
 COPY --from=builder --chown=65532:65532 /out/data /data
+COPY --from=admin-web-builder --chown=65532:65532 /src/admin-web/dist /app/admin-web
 
 USER 65532:65532
 EXPOSE 8787 8788
@@ -36,4 +46,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/app/obsidian-sync-server", "healthcheck", "--url", "http://127.0.0.1:8787/healthz", "--timeout", "3s"]
 
 ENTRYPOINT ["/app/obsidian-sync-server"]
-CMD ["serve", "--listen", "0.0.0.0:8787", "--allow-non-loopback", "--admin-listen", "0.0.0.0:8788", "--allow-admin-non-loopback", "--database", "/data/sync.db", "--admin-token-file", "/run/secrets/sync_admin_token", "--log", "/data/server.jsonl"]
+CMD ["serve", "--listen", "0.0.0.0:8787", "--allow-non-loopback", "--admin-listen", "0.0.0.0:8788", "--allow-admin-non-loopback", "--admin-auth", "none", "--database", "/data/sync.db", "--admin-ui-directory", "/app/admin-web", "--backup-directory", "/backups", "--log", "/data/server.jsonl"]

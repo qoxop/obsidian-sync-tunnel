@@ -1,127 +1,82 @@
-# Docker Desktop 部署与运维
+# Docker Desktop 部署与恢复
 
-## 安全拓扑
+## 正常安装与升级
 
-| 端口 | 宿主机绑定 | 使用者 | 是否进入 Cloudflare |
-|---|---|---|---|
-| 8787 | `127.0.0.1` | `cloudflared` / 本机健康检查 | 是 |
-| 8788 | `127.0.0.1` | Windows 管理脚本 | 否，禁止 |
-
-容器内部两个端口显式监听 `0.0.0.0` 供 Docker NAT 使用，但 Compose 的 `host_ip` 固定为 `127.0.0.1`。服务要求两个独立的显式 non-loopback opt-in，防止直接运行二进制时误暴露公共或管理端口。
-
-最终镜像使用非 root distroless、只读根文件系统、删除 capabilities、`no-new-privileges`，`/tmp` 为小型 tmpfs。`/data` 和 `/backups` 是 Windows bind mount；Admin Token 通过只读 Compose secret 挂入 `/run/secrets/sync_admin_token`。
-
-## 全新初始化
+确保 Docker Desktop 已启动，在项目目录运行：
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\docker-init.ps1
-.\scripts\docker-up.ps1
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\scripts\setup.ps1
 ```
 
-默认创建：
+首次运行会创建本地配置、持久化数据目录和备份目录；之后运行同一个命令会使用现有配置重新构建并升级服务。脚本完成后会自动打开：
 
-```text
-.env                         版本、回环端口、限制和宿主机路径
-runtime-data/                sync.db、WAL、Chunk、JSONL 日志
-runtime-backups/             在线一致备份
-secrets/admin-token.txt      本机 Admin Token，不用于客户端
-```
+<http://127.0.0.1:8788/admin/>
 
-自定义路径：
+需要自定义数据位置时，仅在首次运行时传入：
 
 ```powershell
-.\scripts\docker-init.ps1 `
+.\scripts\setup.ps1 `
   -DataDirectory 'D:\ObsidianSync\data' `
-  -BackupDirectory 'E:\ObsidianSyncBackups' `
-  -AdminTokenFile 'D:\ObsidianSync\secrets\admin-token.txt' `
-  -HostPort 8787 -AdminHostPort 8788 `
-  -MaxFileBytes 67108864 `
-  -Version '1.0.0-rc.1'
+  -BackupDirectory 'E:\ObsidianSyncBackups'
 ```
 
-未显式传入 `-Version` 时，初始化脚本自动读取当前源码的 `manifest.json`，避免容器版本与检出的 Tag 不一致。已有 `.env` 默认不会覆盖；需要改动端口或持久化路径时先备份并审查，再使用 `-ForceConfig` 重新生成。
+如需重新生成 `.env`，使用 `-ResetConfiguration`。这不会主动删除旧数据，但必须确认新配置仍指向正确的数据目录。
 
-## 验证监听和容器
+## 日常管理
 
-```powershell
-docker compose config --quiet
-docker compose ps
-docker compose port sync-server 8787
-docker compose port sync-server 8788
-Invoke-RestMethod http://127.0.0.1:8787/healthz
-Invoke-RestMethod http://127.0.0.1:8788/healthz
-.\scripts\docker-logs.ps1 -Tail 100
-```
+管理页面提供：
 
-两项 `docker compose port` 必须显示 `127.0.0.1`。不要把 Compose `host_ip` 改为 `0.0.0.0`，不要把 Admin Token 放到 `.env`，不要让 Tunnel 指向 8788。
+- Vault 创建、暂停和配额；
+- 一次性配对码；
+- 设备查看、退役和撤销；
+- 服务统计、运行日志和审计日志；
+- SQLite 与 Chunk 完整性检查；
+- 在线一致性备份及校验；
+- 两阶段垃圾回收预览与执行。
 
-## 管理 Vault 和设备
+普通用户不需要运行管理、日志、备份或校验脚本。容器的 `restart: unless-stopped` 会在 Docker Desktop 启动后恢复服务。
 
-```powershell
-.\scripts\admin.ps1 -ListVaults
-.\scripts\admin.ps1 -CreateVault -VaultId personal-notes -DisplayName 'Personal notes'
-.\scripts\admin.ps1 -UpdateVault -VaultId personal-notes -DisplayName 'Personal notes' -VaultStatus suspended
-.\scripts\admin.ps1 -CreatePairing -VaultId personal-notes -TTLSeconds 600
-.\scripts\admin.ps1 -ListDevices -VaultId personal-notes
-.\scripts\admin.ps1 -SetDeviceStatus -VaultId personal-notes -DeviceId '<id>' -Status revoked
-.\scripts\admin.ps1 -Stats
-.\scripts\admin.ps1 -Doctor
-.\scripts\admin.ps1 -ListAudit
-```
+## 网络边界
 
-`admin.ps1` 默认从 `secrets/admin-token.txt` 读取 Token，不打印 Token。配对码会显示一次，短期有效且只能用一次；每台设备生成新的码。
+| 端口 | 用途 | 允许访问范围 |
+|---|---|---|
+| `8787` | Obsidian 同步 API | 本机 `cloudflared` |
+| `8788` | 管理页面 | 仅服务器电脑本机 |
 
-GC 始终两步：
+两个端口都必须保持绑定到 `127.0.0.1`。Cloudflare Tunnel 只能指向 `http://127.0.0.1:8787`，绝不能转发 `8788`。
 
-```powershell
-$plan = .\scripts\admin.ps1 -PlanGC -RetentionDays 90 -KeepVersions 20
-$plan
-.\scripts\admin.ps1 -ExecuteGC -PlanId $plan.id -PlanHash $plan.hash
-```
+默认管理模式不要求 Admin Token，因为管理端口不会离开本机。若本机为多人共用，可重新初始化时使用 `-AdminAuth token`。
 
-执行前审查水位线、revision、路径数和预计字节。Hash 不匹配或计划已执行时服务拒绝操作。
+## 备份
 
-## 在线备份、验证和恢复
+在管理页面的 **维护与备份** 中点击 **立即备份**，再点击 **校验**。备份保存在 `.env` 配置的宿主机备份目录中。
 
-服务运行时不要复制 live `sync.db` 或单独复制 `blobs/`。在线备份：
+服务端和同机备份都可能因磁盘故障同时丢失。应定期把已经校验的备份复制到另一台设备的加密存储。
 
-```powershell
-.\scripts\docker-backup.ps1 -KeepLast 7
-.\scripts\docker-verify-backup.ps1 -BackupDirectory '<备份目录>'
-```
+## 灾难恢复
 
-服务用 `VACUUM INTO` 生成 SQLite 快照，复制 Chunk，并生成逐文件 SHA-256 `backup.json`。`-KeepLast` 只删除配置备份根目录内、名称符合时间格式且含 manifest 的旧备份。
+恢复会替换整个运行数据集，不能由正在使用该 SQLite 的服务安全执行。因此这是唯一保留的停服命令行操作。
 
-恢复仅用于已经验证的备份：
+1. 在管理页面确认目标备份已通过校验；
+2. 关闭所有客户端的自动同步；
+3. 在服务器项目目录运行：
 
-```powershell
-.\scripts\docker-restore.ps1 -BackupDirectory '<备份目录>' -ConfirmRestore
-```
+   ```powershell
+   .\scripts\docker-restore.ps1 `
+     -BackupDirectory '<已校验的备份目录>' `
+     -ConfirmRestore
+   ```
 
-脚本停止服务，把 live 数据移动为带时间戳 rollback 目录，新建数据目录、复制备份、启动并等待 healthy；失败时自动保留失败目录并恢复旧数据。成功后旧 live 数据仍保留，确认一段时间后再人工处理。
+脚本会再次校验备份、停止容器、保留旧数据回滚目录、恢复并等待健康检查。恢复失败时会自动尝试回滚。
 
-备份包含明文 Vault 内容但不包含 Admin/设备 Token。至少复制一份到服务器电脑以外的加密存储，并定期执行恢复演练。
+## 无法打开管理页面
 
-## Cloudflare Tunnel
+按以下顺序检查：
 
-Windows `cloudflared` 保持独立服务，Origin 为：
+1. Docker Desktop 是否正在运行；
+2. Docker Desktop 的 Containers 页面中 `obsidian-sync-server` 是否为 healthy；
+3. 重新运行 `.\scripts\setup.ps1`；
+4. 查看 Docker Desktop 中该容器的 Logs。
 
-```text
-http://127.0.0.1:<OBSIDIAN_SYNC_PORT>
-```
-
-推荐在该 Public Hostname 上配置 Cloudflare Access Self-hosted Application + Service Token。Access 保护边缘，设备凭据保护 Vault，两者都需要。管理端永不创建 Public Hostname。
-
-502 排查顺序：本机 8787 health → `docker compose ps`/logs → `Get-Service cloudflared` → Tunnel connector → Access policy。`ERR_INTERNET_DISCONNECTED` 是客户端网络层错误，恢复网络后持久化 outbox/inbox 继续。
-
-## 生命周期
-
-```powershell
-.\scripts\docker-up.ps1            # 构建并启动/升级
-.\scripts\docker-up.ps1 -NoBuild   # 启动已有镜像
-.\scripts\docker-logs.ps1 -Follow
-.\scripts\docker-down.ps1          # 删除容器/网络，保留 bind mount
-```
-
-Docker Desktop 和 `cloudflared` 应随 Windows 登录启动。升级前先做在线备份；镜像回滚不等于数据库回滚，必须恢复同一时点的整个 `sync.db + blobs` 数据集。
+只有服务能够启动后，管理页面中的运行日志才可用于进一步排查。

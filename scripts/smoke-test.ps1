@@ -9,13 +9,20 @@ param(
 $ErrorActionPreference = "Stop"
 $PublicUrl = $PublicUrl.TrimEnd("/")
 $AdminUrl = $AdminUrl.TrimEnd("/")
-if (-not $AdminToken) {
-    if (-not (Test-Path -LiteralPath $AdminTokenFile -PathType Leaf)) {
-        throw "Admin token file not found. Pass -AdminTokenFile or -AdminToken."
+$adminSession = Invoke-RestMethod -Uri "$AdminUrl/admin/v1/session"
+$adminHeaders = @{}
+if ($adminSession.authentication -eq "token") {
+    if (-not $AdminToken) {
+        if (-not (Test-Path -LiteralPath $AdminTokenFile -PathType Leaf)) {
+            throw "Admin token file not found. Pass -AdminTokenFile or -AdminToken."
+        }
+        $AdminToken = (Get-Content -LiteralPath $AdminTokenFile -Raw).Trim()
     }
-    $AdminToken = (Get-Content -LiteralPath $AdminTokenFile -Raw).Trim()
+    if ($AdminToken.Length -lt 32) { throw "Admin token is unexpectedly short" }
+    $adminHeaders.Authorization = "Bearer $AdminToken"
+} elseif ($adminSession.authentication -ne "none") {
+    throw "Unsupported admin authentication mode: $($adminSession.authentication)"
 }
-if ($AdminToken.Length -lt 32) { throw "Admin token is unexpectedly short" }
 
 function Get-Sha256([byte[]]$Bytes) {
     $hasher = [Security.Cryptography.SHA256]::Create()
@@ -44,7 +51,6 @@ function Assert-Unauthorized([scriptblock]$Request) {
     }
 }
 
-$adminHeaders = @{ Authorization = "Bearer $AdminToken" }
 $vaultId = "smoke-$([Guid]::NewGuid().ToString('N').Substring(0, 12))"
 $vaultBase = "$PublicUrl/api/v1/vaults/$vaultId"
 $deviceToken = ""
@@ -75,7 +81,7 @@ try {
     }
 
     $path = "folder/smoke-note.md"
-    $data = [Text.UTF8Encoding]::new($false).GetBytes("sync tunnel 1.0 smoke test")
+	$data = [Text.UTF8Encoding]::new($false).GetBytes("sync tunnel 1.0 smoke test $vaultId")
     $hash = Get-Sha256 $data
     $putHeaders = New-MutationHeaders $deviceToken 0 $hash
     $encodedPath = [Uri]::EscapeDataString($path)

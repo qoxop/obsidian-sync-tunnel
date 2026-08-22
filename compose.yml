@@ -2,11 +2,11 @@ name: obsidian-sync-tunnel
 
 services:
   sync-server:
-    image: obsidian-sync-tunnel:${OBSIDIAN_SYNC_VERSION:-1.0.0-rc.1}
+    image: obsidian-sync-tunnel:${OBSIDIAN_SYNC_VERSION:-1.0.0-rc.2}
     build:
       context: .
       args:
-        VERSION: ${OBSIDIAN_SYNC_VERSION:-1.0.0-rc.1}
+        VERSION: ${OBSIDIAN_SYNC_VERSION:-1.0.0-rc.2}
     container_name: obsidian-sync-server
     restart: unless-stopped
     init: true
@@ -36,10 +36,16 @@ services:
       - --admin-listen
       - 0.0.0.0:8788
       - --allow-admin-non-loopback
+      - --admin-auth
+      - "${OBSIDIAN_SYNC_ADMIN_AUTH:-none}"
       - --database
       - /data/sync.db
       - --admin-token-file
-      - /run/secrets/sync_admin_token
+      - /run/secrets/admin-token.txt
+      - --admin-ui-directory
+      - /app/admin-web
+      - --backup-directory
+      - /backups
       - --log
       - /data/server.jsonl
       - --max-file-bytes
@@ -61,12 +67,10 @@ services:
         target: /backups
         bind:
           create_host_path: false
-    secrets:
-      - sync_admin_token
+      - type: bind
+        source: ${OBSIDIAN_SYNC_SECRETS_DIR:-./secrets}
+        target: /run/secrets
+        read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
     stop_grace_period: 20s
-
-secrets:
-  sync_admin_token:
-    file: ${OBSIDIAN_SYNC_ADMIN_TOKEN_FILE:-./secrets/admin-token.txt}

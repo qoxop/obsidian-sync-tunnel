@@ -1,8 +1,11 @@
 {
   "listen": "127.0.0.1:8787",
 	"admin_listen": "127.0.0.1:8788",
+	"admin_auth": "none",
   "database_path": "data/sync.db",
 	"admin_token_file": "admin-token.txt",
+	"admin_ui_directory": "admin-web/dist",
+	"backup_directory": "runtime-backups",
   "log_path": "logs/server.jsonl",
 	"max_file_bytes": 67108864,
 	"default_vault_quota_bytes": 0,

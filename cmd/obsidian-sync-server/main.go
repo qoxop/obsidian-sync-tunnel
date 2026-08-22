@@ -194,8 +194,11 @@ func serve(args []string) error {
 	fs.StringVar(&configPath, "config", configPath, "path to a JSON configuration file")
 	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "HTTP listen address")
 	fs.StringVar(&cfg.AdminListen, "admin-listen", cfg.AdminListen, "loopback-only admin HTTP listen address")
+	fs.StringVar(&cfg.AdminAuth, "admin-auth", cfg.AdminAuth, "admin authentication mode: none or token")
 	fs.StringVar(&cfg.DatabasePath, "database", cfg.DatabasePath, "SQLite database path")
 	fs.StringVar(&cfg.AdminTokenFile, "admin-token-file", cfg.AdminTokenFile, "file containing the local admin bearer token")
+	fs.StringVar(&cfg.AdminUIDirectory, "admin-ui-directory", cfg.AdminUIDirectory, "directory containing the built admin Web application")
+	fs.StringVar(&cfg.BackupDirectory, "backup-directory", cfg.BackupDirectory, "directory containing managed online backups")
 	fs.StringVar(&cfg.LogPath, "log", cfg.LogPath, "optional append-only JSON log path")
 	fs.Int64Var(&cfg.MaxFileBytes, "max-file-bytes", cfg.MaxFileBytes, "maximum bytes per file")
 	fs.Int64Var(&cfg.DefaultVaultQuotaBytes, "default-vault-quota-bytes", cfg.DefaultVaultQuotaBytes, "default logical byte quota per vault; zero disables")
@@ -264,8 +267,13 @@ func runHTTPServer(ctx context.Context, cfg config.Config, db *store.Store, admi
 		WriteTimeout:      5 * time.Minute,
 	}
 	adminServer := &http.Server{
-		Addr:              cfg.AdminListen,
-		Handler:           httpapi.NewAdmin(db, adminToken, logger),
+		Addr: cfg.AdminListen,
+		Handler: httpapi.NewAdmin(db, adminToken, httpapi.AdminOptions{
+			StaticDirectory: cfg.AdminUIDirectory,
+			BackupDirectory: cfg.BackupDirectory,
+			LogPath:         cfg.LogPath,
+			AuthRequired:    cfg.AdminAuth == "token",
+		}, logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		WriteTimeout:      30 * time.Minute,

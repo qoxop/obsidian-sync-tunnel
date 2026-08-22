@@ -78,13 +78,7 @@ docker build --build-arg VERSION=local-test --tag obsidian-sync-tunnel:local-tes
 
 正式本机环境的只读健康检查：
 
-```powershell
-docker compose ps
-Invoke-RestMethod http://127.0.0.1:8787/healthz
-Invoke-RestMethod http://127.0.0.1:8788/healthz
-.\scripts\admin.ps1 -Doctor
-.\scripts\admin.ps1 -Stats
-```
+打开 `http://127.0.0.1:8788/admin/`，确认概览可加载，并在“维护与备份”中运行数据检查。Docker Desktop 中容器应显示 healthy。
 
 不要让自动测试指向正式 Vault。需要接口级写入测试时，使用 `smoke-selftest.ps1` 的临时服务，或显式创建只用于测试的逻辑 Vault。
 

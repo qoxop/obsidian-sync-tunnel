@@ -57,7 +57,7 @@ flowchart LR
     CF -->|出站 Tunnel| CFD[Windows cloudflared 服务]
     CFD -->|HTTP 127.0.0.1:8787| PUB[Docker 公共同步端口]
 
-    ADMIN[Windows 管理脚本] -->|HTTP 127.0.0.1:8788 + Admin Token| ADM[Docker 管理端口]
+	ADMIN[本机管理 Web] -->|HTTP 127.0.0.1:8788| ADM[Docker 管理端口]
     PUB --> SERVER[Go 服务]
     ADM --> SERVER
     SERVER --> DB[(SQLite + WAL)]
@@ -70,7 +70,7 @@ flowchart LR
 
 - Compose 只把 `8787` 和 `8788` 发布到宿主机 `127.0.0.1`；
 - Cloudflare Public Hostname 只允许指向 `http://127.0.0.1:8787`；
-- `8788` 和 Admin Token 永远不进入 Tunnel、Obsidian 或普通笔记；
+- `8788` 永远不进入 Tunnel、Obsidian 或普通笔记，应用层同时校验回环 Host 和同源 Origin；
 - 容器内部监听 `0.0.0.0` 仅为 Docker NAT，宿主机仍由 Compose 限制为回环地址；
 - SQLite、Chunk、日志与备份通过 Windows bind mount 持久化，删除容器不会删除数据。
 
@@ -83,7 +83,8 @@ internal/httpapi/          公共 API、管理 API、鉴权、限速和错误映
 internal/store/            领域模型、SQLite、Chunk、历史、GC 和备份
 plugin/src/                Obsidian 插件、同步状态机和产品界面
 plugin/tests/              插件单元与状态机测试
-scripts/                   构建、部署、管理、备份、恢复和冒烟测试
+admin-web/src/             本机管理 Web 页面与 Admin API 客户端
+scripts/                   一键安装、灾难恢复、构建、发布和测试工具
 docs/                      长期维护的架构、协议、运维和发布文档
 ```
 
@@ -110,7 +111,7 @@ flowchart TB
 - `internal/httpapi` 负责协议适配，不在 Handler 中散落 SQL；
 - 插件同步状态机通过 `SyncApiClient` 和 Obsidian `DataAdapter` 访问外部世界；
 - UI 负责收集确认和展示状态，不决定 revision、冲突或删除语义；
-- 运维脚本只调用稳定 CLI、Admin API 或 Compose，不直接修改 SQLite。
+- 管理 Web 只调用 Admin API，不直接访问 SQLite；灾难恢复脚本只在停服后替换完整数据集。
 
 ## 4. 服务端进程架构
 
@@ -129,13 +130,13 @@ flowchart TB
 
 `serve` 启动两个独立 `http.Server`：公共端默认 `127.0.0.1:8787`，管理端默认 `127.0.0.1:8788`。任一 Server 异常退出都会触发进程关闭；收到 `SIGTERM` 或中断信号后，两者共享 15 秒优雅关闭窗口。
 
-配置优先由安全默认值提供，可选 JSON 配置文件，再由显式 CLI 参数覆盖。除非显式打开容器场景开关，配置校验会拒绝非回环监听。Admin Token 默认从只读文件解析。
+配置优先由安全默认值提供，可选 JSON 配置文件，再由显式 CLI 参数覆盖。除非显式打开容器场景开关，配置校验会拒绝非回环监听。管理端默认使用 `none` 模式并依赖回环端口边界；多人共用主机可启用 `token` 模式，Token 仅从只读文件解析。
 
 ## 5. 身份、权限与信任模型
 
 系统有两类身份，不能互换：
 
-1. **管理员身份**：本机 Admin Token，可创建/停用 Vault、签发配对码、管理设备、执行 GC 和备份。
+1. **管理员入口**：仅本机可访问的管理 Web；可选 Token 模式用于多人共用主机。
 2. **设备身份**：一次性配对成功后由服务端分配 Device ID，并返回该设备自己的 Bearer 凭据。
 
 ```mermaid
@@ -404,9 +405,9 @@ flowchart LR
     RESTORE --> ROLLBACK[保留旧 live data 回滚目录]
 ```
 
-`docker-backup.ps1` 通过 Admin API 创建在线一致性备份并立即在容器内校验；`docker-restore.ps1` 再次校验后停止容器，将旧数据移动到可恢复目录，再启动新数据并等待健康检查。备份不包含 Admin Token，但包含明文 Vault 内容，必须复制到另一台设备上的加密存储。
+管理 Web 通过 Admin API 创建和校验在线一致性备份；`docker-restore.ps1` 再次校验后停止容器，将旧数据移动到可恢复目录，再启动新数据并等待健康检查。备份不包含管理凭据，但包含明文 Vault 内容，必须复制到另一台设备上的加密存储。
 
-`doctor` 检查 SQLite、Chunk 缺失、Chunk 损坏和孤儿文件。`stats` 提供 Vault、设备、文件、历史、Blob 和 Chunk 计数。日志使用 JSONL，记录 request ID、路由、状态和耗时，不记录 Token、正文或完整路径。
+`doctor` 检查 SQLite、Chunk 缺失、Chunk 损坏和孤儿文件。`stats` 提供 Vault、设备、文件、历史、Blob 和 Chunk 计数。日志使用 JSONL，记录 request ID、路由、状态和耗时，不记录 Token、正文或完整路径；管理 Web 可读取最近的结构化日志。
 
 ## 15. 限制、配额与故障语义
 

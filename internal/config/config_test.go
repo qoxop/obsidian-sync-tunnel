@@ -64,9 +64,19 @@ func TestResourceLimitValidation(t *testing.T) {
 	}
 }
 
-func TestResolveAdminTokenRequiresASecretFile(t *testing.T) {
+func TestResolveAdminTokenIsOptionalByDefault(t *testing.T) {
 	t.Setenv("OBSIDIAN_SYNC_ADMIN_TOKEN", strings.Repeat("x", 64))
 	cfg := Default()
+	resolved, err := cfg.ResolveAdminToken()
+	if err != nil || resolved != "" {
+		t.Fatalf("default token resolution=%q err=%v", resolved, err)
+	}
+}
+
+func TestResolveAdminTokenModeRequiresASecretFile(t *testing.T) {
+	t.Setenv("OBSIDIAN_SYNC_ADMIN_TOKEN", strings.Repeat("x", 64))
+	cfg := Default()
+	cfg.AdminAuth = "token"
 	if _, err := cfg.ResolveAdminToken(); err == nil {
 		t.Fatal("environment-only Admin Token was accepted")
 	}

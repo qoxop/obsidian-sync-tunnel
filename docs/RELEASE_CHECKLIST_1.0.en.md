@@ -16,7 +16,7 @@
 
 ## RC publication
 
-After manual approval, commit the synchronized `1.0.0-rc.1` manifest/package/versions files, push main, create an annotated `1.0.0-rc.1` tag, and push the tag. The workflow publishes only the three unofficial plugin assets, checksums, CycloneDX SBOM and a prerelease. It does not publish server binaries or container images.
+After manual approval, commit the synchronized `1.0.0-rc.2` manifest/package/versions files, push main, create an annotated `1.0.0-rc.2` tag, and push the tag. The workflow publishes only the three unofficial plugin assets, checksums, CycloneDX SBOM and a prerelease. It does not publish server binaries or container images.
 
 Verify the release flag, asset hashes and BRAT installation. Run manual acceptance using downloaded plugin assets and a server built locally from the Dockerfile at the same immutable Tag.
 

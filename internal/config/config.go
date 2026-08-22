@@ -15,8 +15,11 @@ const defaultMaxFileBytes int64 = 64 * 1024 * 1024
 type Config struct {
 	Listen                 string `json:"listen"`
 	AdminListen            string `json:"admin_listen"`
+	AdminAuth              string `json:"admin_auth"`
 	DatabasePath           string `json:"database_path"`
 	AdminTokenFile         string `json:"admin_token_file"`
+	AdminUIDirectory       string `json:"admin_ui_directory"`
+	BackupDirectory        string `json:"backup_directory"`
 	LogPath                string `json:"log_path"`
 	MaxFileBytes           int64  `json:"max_file_bytes"`
 	DefaultVaultQuotaBytes int64  `json:"default_vault_quota_bytes"`
@@ -32,7 +35,10 @@ func Default() Config {
 	return Config{
 		Listen:                "127.0.0.1:8787",
 		AdminListen:           "127.0.0.1:8788",
+		AdminAuth:             "none",
 		DatabasePath:          "data/sync.db",
+		AdminUIDirectory:      "admin-web/dist",
+		BackupDirectory:       "runtime-backups",
 		MaxFileBytes:          defaultMaxFileBytes,
 		MinFreeBytes:          512 * 1024 * 1024,
 		RateRequestsPerMinute: 600,
@@ -55,6 +61,12 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.AdminTokenFile != "" && !filepath.IsAbs(cfg.AdminTokenFile) {
 		cfg.AdminTokenFile = filepath.Join(base, cfg.AdminTokenFile)
+	}
+	if cfg.AdminUIDirectory != "" && !filepath.IsAbs(cfg.AdminUIDirectory) {
+		cfg.AdminUIDirectory = filepath.Join(base, cfg.AdminUIDirectory)
+	}
+	if cfg.BackupDirectory != "" && !filepath.IsAbs(cfg.BackupDirectory) {
+		cfg.BackupDirectory = filepath.Join(base, cfg.BackupDirectory)
 	}
 	if cfg.LogPath != "" && !filepath.IsAbs(cfg.LogPath) {
 		cfg.LogPath = filepath.Join(base, cfg.LogPath)
@@ -85,6 +97,9 @@ func (c Config) Validate() error {
 	if c.Listen == c.AdminListen {
 		return errors.New("public and admin listen addresses must be different")
 	}
+	if c.AdminAuth != "none" && c.AdminAuth != "token" {
+		return errors.New("admin_auth must be none or token")
+	}
 	if c.MaxFileBytes < 1024 {
 		return errors.New("max_file_bytes must be at least 1024")
 	}
@@ -106,6 +121,9 @@ func (c Config) Validate() error {
 }
 
 func (c Config) ResolveAdminToken() (string, error) {
+	if c.AdminAuth == "none" {
+		return "", nil
+	}
 	if c.AdminTokenFile == "" {
 		return "", errors.New("admin_token_file is required")
 	}

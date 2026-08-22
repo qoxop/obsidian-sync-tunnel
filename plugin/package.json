@@ -1,6 +1,6 @@
 {
   "name": "sync-tunnel",
-  "version": "1.0.0-rc.1",
+  "version": "1.0.0-rc.2",
   "description": "Self-hosted full-vault synchronization through a Go server and Cloudflare Tunnel",
   "private": true,
   "scripts": {

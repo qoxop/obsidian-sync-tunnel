@@ -3,6 +3,8 @@
 /obsidian-sync-server.exe
 /plugin/main.js
 /plugin/node_modules/
+/admin-web/dist/
+/admin-web/node_modules/
 
 # Runtime data and secrets
 /data/

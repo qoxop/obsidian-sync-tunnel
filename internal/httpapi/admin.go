@@ -6,24 +6,41 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"obsidian-sync-tunnel/internal/store"
 )
 
 type AdminAPI struct {
-	store     *store.Store
-	tokenHash [32]byte
-	logger    *slog.Logger
+	store           *store.Store
+	tokenHash       [32]byte
+	logger          *slog.Logger
+	backupDirectory string
+	logPath         string
+	authRequired    bool
 }
 
-func NewAdmin(db *store.Store, token string, logger *slog.Logger) http.Handler {
-	api := &AdminAPI{store: db, tokenHash: sha256.Sum256([]byte(token)), logger: logger}
+type AdminOptions struct {
+	StaticDirectory string
+	BackupDirectory string
+	LogPath         string
+	AuthRequired    bool
+}
+
+func NewAdmin(db *store.Store, token string, options AdminOptions, logger *slog.Logger) http.Handler {
+	api := &AdminAPI{
+		store: db, tokenHash: sha256.Sum256([]byte(token)), logger: logger,
+		backupDirectory: options.BackupDirectory, logPath: options.LogPath, authRequired: options.AuthRequired,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("GET /admin/v1/session", api.session)
 	mux.Handle("GET /admin/v1/vaults", api.auth(http.HandlerFunc(api.listVaults)))
 	mux.Handle("POST /admin/v1/vaults", api.auth(http.HandlerFunc(api.createVault)))
 	mux.Handle("PUT /admin/v1/vaults/{vault}", api.auth(http.HandlerFunc(api.updateVault)))
@@ -34,9 +51,25 @@ func NewAdmin(db *store.Store, token string, logger *slog.Logger) http.Handler {
 	mux.Handle("POST /admin/v1/gc/plans", api.auth(http.HandlerFunc(api.planGC)))
 	mux.Handle("POST /admin/v1/gc/plans/{plan}/execute", api.auth(http.HandlerFunc(api.executeGC)))
 	mux.Handle("GET /admin/v1/doctor", api.auth(http.HandlerFunc(api.doctor)))
+	mux.Handle("GET /admin/v1/backups", api.auth(http.HandlerFunc(api.listBackups)))
 	mux.Handle("POST /admin/v1/backups", api.auth(http.HandlerFunc(api.backup)))
+	mux.Handle("POST /admin/v1/backups/verify", api.auth(http.HandlerFunc(api.verifyBackup)))
+	mux.Handle("GET /admin/v1/logs", api.auth(http.HandlerFunc(api.listLogs)))
 	mux.Handle("GET /admin/v1/stats", api.auth(http.HandlerFunc(api.stats)))
-	return api.authLog(securityHeaders(mux))
+	if ui := newAdminUIHandler(options.StaticDirectory); ui != nil {
+		mux.Handle("GET /admin/", ui)
+		mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin/", http.StatusTemporaryRedirect)
+		})
+		mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/" {
+				http.NotFound(w, r)
+				return
+			}
+			http.Redirect(w, r, "/admin/", http.StatusTemporaryRedirect)
+		})
+	}
+	return api.authLog(securityHeaders(api.localOnly(mux)))
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -44,12 +77,18 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
 }
 
 func (a *AdminAPI) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !a.authRequired {
+			next.ServeHTTP(w, r)
+			return
+		}
 		value := bearerToken(r)
 		provided := sha256.Sum256([]byte(value))
 		if value == "" || subtle.ConstantTimeCompare(provided[:], a.tokenHash[:]) != 1 {
@@ -58,6 +97,49 @@ func (a *AdminAPI) auth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (a *AdminAPI) session(w http.ResponseWriter, _ *http.Request) {
+	mode := "none"
+	if a.authRequired {
+		mode = "token"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authentication": mode,
+		"local_only":     true,
+	})
+}
+
+func (a *AdminAPI) localOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLoopbackHost(r.Host) {
+			writeError(w, http.StatusForbidden, "admin_local_only", "admin service is available only through a loopback host")
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" && !sameOriginHost(origin, r.Host) {
+			writeError(w, http.StatusForbidden, "cross_origin_denied", "cross-origin admin request denied")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isLoopbackHost(hostport string) bool {
+	host := hostport
+	if parsed, _, err := net.SplitHostPort(hostport); err == nil {
+		host = parsed
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func sameOriginHost(origin, requestHost string) bool {
+	parsed, err := url.Parse(origin)
+	return err == nil && parsed.Host != "" && strings.EqualFold(parsed.Host, requestHost)
 }
 
 func bearerToken(r *http.Request) string {
@@ -223,12 +305,17 @@ func (a *AdminAPI) backup(w http.ResponseWriter, r *http.Request) {
 	if !decodeAdminJSON(w, r, &request) {
 		return
 	}
-	manifest, err := a.store.Backup(r.Context(), request.Destination)
+	destination, err := a.resolveBackupDestination(request.Destination, true)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_backup_destination", err.Error())
+		return
+	}
+	manifest, err := a.store.Backup(r.Context(), destination)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, manifest)
+	writeJSON(w, http.StatusCreated, map[string]any{"destination": destination, "manifest": manifest})
 }
 
 func (a *AdminAPI) stats(w http.ResponseWriter, r *http.Request) {

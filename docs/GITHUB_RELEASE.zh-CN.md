@@ -11,14 +11,14 @@ pre-1.0 客户端/服务协议不兼容。用户更新到 1.0 必须同时更新
 ## 本地准备
 
 ```powershell
-node .\scripts\set-plugin-version.mjs 1.0.0-rc.1
+node .\scripts\set-plugin-version.mjs 1.0.0-rc.2
 Set-Location .\plugin
 npm ci
 npm run typecheck
 npm test
 npm run build
 Set-Location ..
-node .\scripts\verify-plugin-release.mjs 1.0.0-rc.1 --artifacts
+node .\scripts\verify-plugin-release.mjs 1.0.0-rc.2 --artifacts
 ```
 
 发布工作流只生成插件附件：`main.js`、`manifest.json`、`styles.css`、`SHA256SUMS.txt` 和 `plugin-sbom.cdx.json`。它不会发布服务端二进制、Docker/OCI 镜像、`latest` 标签或任何运行数据。
@@ -47,10 +47,10 @@ BRAT 只安装插件程序，不复制配置、凭据或客户端状态。找不
 在服务器电脑检出与插件完全相同的 Tag，然后本地构建：
 
 ```powershell
-git clone --branch 1.0.0-rc.1 --depth 1 https://github.com/qoxop/obsidian-sync-tunnel.git
+git clone --branch 1.0.0-rc.2 --depth 1 https://github.com/qoxop/obsidian-sync-tunnel.git
 Set-Location .\obsidian-sync-tunnel
-docker build --pull --build-arg VERSION=1.0.0-rc.1 -t obsidian-sync-tunnel:1.0.0-rc.1 .
-docker run --rm obsidian-sync-tunnel:1.0.0-rc.1 version
+docker build --pull --build-arg VERSION=1.0.0-rc.2 -t obsidian-sync-tunnel:1.0.0-rc.2 .
+docker run --rm obsidian-sync-tunnel:1.0.0-rc.2 version
 ```
 
 输出版本正确后，再按 [Docker Desktop 部署指引](DOCKER_DEPLOYMENT.zh-CN.md)初始化本地数据目录、密钥和 Compose。不要使用来源不明的第三方镜像；服务端升级和回滚都应重新检出明确 Tag 并使用该 Tag 的 Dockerfile 构建。

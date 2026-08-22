@@ -4,7 +4,7 @@ The only base path is `/api/v1`, with `protocol.version = 1`. Draft `/api/v2` ro
 
 ## Authentication
 
-- Admin: loopback `8788`, `Authorization: Bearer <local Admin Token>`; never tunneled.
+- Admin: loopback `8788`, tokenless by default with Host/Origin checks; optional local bearer token mode; never tunneled.
 - Pairing: `POST /api/v1/pair` with a short-lived one-time code; no device Bearer.
 - Device: the pair response returns a server-assigned Device ID and high-entropy credential. Subsequent calls use that credential as Bearer; identity is derived from it.
 - Optional Cloudflare Access uses `CF-Access-Client-Id` and `CF-Access-Client-Secret` in addition to the device credential.
@@ -34,7 +34,7 @@ Mutations carry `X-Operation-ID` (UUID), `X-Base-Revision`, `X-Modified-At`, and
 
 ## Admin API
 
-`/admin/v1` manages Vaults, pairing codes, device status, audit, statistics, doctor, online backups, and two-phase GC. The supported front ends are `scripts/admin.ps1`, `docker-backup.ps1`, `docker-verify-backup.ps1`, and `docker-restore.ps1`.
+`/admin/v1` powers the local Web console for Vaults, pairing codes, device status, audit, runtime logs, statistics, doctor, online backups, and two-phase GC. Disaster recovery remains the only offline script operation.
 
 ## Errors and retries
 

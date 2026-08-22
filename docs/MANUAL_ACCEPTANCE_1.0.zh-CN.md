@@ -19,16 +19,11 @@
 $VERSION = (Get-Content .\manifest.json -Raw | ConvertFrom-Json).version
 $DATA_DIR = Join-Path $PWD 'runtime-data-acceptance'
 $BACKUP_DIR = Join-Path $PWD 'runtime-backups-acceptance'
-$ADMIN_TOKEN_FILE = Join-Path $PWD 'secrets\admin-token-acceptance.txt'
 
-.\scripts\docker-down.ps1
-.\scripts\docker-init.ps1 `
+.\scripts\setup.ps1 `
   -DataDirectory $DATA_DIR `
   -BackupDirectory $BACKUP_DIR `
-  -AdminTokenFile $ADMIN_TOKEN_FILE `
-  -Version $VERSION `
-  -ForceConfig
-.\scripts\docker-up.ps1
+	-ResetConfiguration
 ```
 
 验证：
@@ -37,18 +32,13 @@ $ADMIN_TOKEN_FILE = Join-Path $PWD 'secrets\admin-token-acceptance.txt'
 docker compose ps
 Invoke-RestMethod http://127.0.0.1:8787/healthz
 Invoke-RestMethod http://127.0.0.1:8788/healthz
-.\scripts\admin.ps1 -Doctor -AdminTokenFile $ADMIN_TOKEN_FILE
-.\scripts\admin.ps1 -Stats -AdminTokenFile $ADMIN_TOKEN_FILE
 ```
 
-通过标准：容器 healthy；两个 health 均为 `ok`；doctor `ok=true`；`docker compose port` 显示宿主机为 `127.0.0.1`。确认 Cloudflare Public Hostname 仍只指向 `http://127.0.0.1:8787`，绝不能指向 `8788`。
+打开本机管理页面，在概览中检查统计，并在“维护与备份”中运行数据检查。通过标准：容器 healthy；两个 health 均为 `ok`；doctor 正常；管理页面可加载。确认 Cloudflare Public Hostname 仍只指向 `http://127.0.0.1:8787`，绝不能指向 `8788`。
 
 ## 2. 创建逻辑 Vault 与设备 A
 
-```powershell
-.\scripts\admin.ps1 -CreateVault -VaultId test-1-0 -DisplayName '1.0 acceptance' -AdminTokenFile $ADMIN_TOKEN_FILE
-.\scripts\admin.ps1 -CreatePairing -VaultId test-1-0 -AdminTokenFile $ADMIN_TOKEN_FILE
-```
+在管理页面的“Vault 与设备”中新建 Vault ID `test-1-0`，显示名称填写 `1.0 acceptance`，然后点击“配对”生成一次性配对码。
 
 一次性配对码只在插件向导中临时使用。设备 A：
 
@@ -98,10 +88,7 @@ Invoke-RestMethod http://127.0.0.1:8788/healthz
 
 ## 6. 权限、配额和运维
 
-```powershell
-.\scripts\admin.ps1 -ListDevices -VaultId test-1-0 -AdminTokenFile $ADMIN_TOKEN_FILE
-.\scripts\admin.ps1 -ListAudit -AdminTokenFile $ADMIN_TOKEN_FILE
-```
+在管理页面查看 `test-1-0` 的设备列表、审计日志和运行日志。
 
 - [ ] 插件执行“轮换设备凭据”后继续工作，旧凭据失效；
 - [ ] 管理端 revoke 测试设备后立刻返回未授权；
@@ -113,12 +100,7 @@ Invoke-RestMethod http://127.0.0.1:8788/healthz
 
 ## 7. 在线备份与恢复演练
 
-目标必须是另一块加密磁盘或同步到另一台机器的目录：
-
-```powershell
-.\scripts\docker-backup.ps1 -KeepLast 3
-.\scripts\docker-verify-backup.ps1 -BackupDirectory '<刚生成的备份目录>'
-```
+在管理页面“维护与备份”中创建在线备份并点击“校验”。随后把已校验备份复制到另一块加密磁盘或另一台机器。
 
 记录当前 Vault revision 和探针 SHA-256，然后在测试数据上执行：
 

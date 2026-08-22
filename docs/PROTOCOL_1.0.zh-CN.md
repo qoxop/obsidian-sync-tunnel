@@ -11,8 +11,8 @@
 ### 管理端
 
 - 监听：默认 `127.0.0.1:8788`；
-- 鉴权：`Authorization: Bearer <Admin Token>`；
-- Admin Token 只保存在宿主机 secret 文件，不能进入 Obsidian 或 Cloudflare；
+- 鉴权：默认 `none`，依赖回环监听、Host 与 Origin 校验；可选 `token` 模式使用 `Authorization: Bearer <Admin Token>`；
+- Token 模式的 Admin Token 只保存在宿主机 secret 文件，不能进入 Obsidian 或 Cloudflare；
 - 管理端不得通过 Tunnel 暴露。
 
 ### 公共端
@@ -32,7 +32,7 @@
 
 ```json
 {
-  "server_version": "1.0.0-rc.1",
+  "server_version": "1.0.0-rc.2",
   "protocol": { "version": 1 },
   "capabilities": [
     "snapshot", "idempotent-operations", "whole-file", "chunk-transfer",
@@ -85,7 +85,7 @@
 
 ## 管理接口
 
-`/admin/v1` 提供 Vault 创建/更新、配对码、设备状态、审计、统计、doctor、在线备份和两阶段 GC。管理脚本为 `scripts/admin.ps1`、`docker-backup.ps1`、`docker-verify-backup.ps1` 和 `docker-restore.ps1`。
+`/admin/v1` 由本机管理 Web 使用，提供会话模式、Vault 创建/更新、配对码、设备状态、审计、运行日志、统计、doctor、在线备份和两阶段 GC。灾难恢复因需要停服，使用 `scripts/docker-restore.ps1`。
 
 ## 错误与重试
 

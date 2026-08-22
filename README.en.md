@@ -2,96 +2,61 @@
 
 English | [简体中文](README.md)
 
-A personal, self-hosted full-Vault synchronization system for Obsidian. The Go/SQLite server runs in Windows Docker Desktop with bind-mounted persistence, Cloudflare Tunnel provides HTTPS ingress, and an unofficial Obsidian plugin supports desktop and mobile clients.
+A personal, self-hosted Obsidian sync service. The server runs on your own Windows computer, while Cloudflare Tunnel connects your other computers and mobile devices.
 
-Current version: `1.0.0-rc.1`. Keep an independent backup and do not use this release candidate as the only copy of a real Vault.
+> This is still a 1.0 release candidate. Keep an independent backup of every real Vault while testing.
 
-## Features
+## What it does
 
-- One administrator, multiple logical Vaults and multiple devices.
-- Notes, Canvas, images, attachments, common Obsidian settings, themes, CSS and other plugin files.
-- Notes, Recommended, Full and Custom sync profiles; Recommended is the safe default.
-- First-sync preview with safe merge, remote-primary and local-primary choices.
-- SHA-256 content addressing, 4 MiB Chunks, missing-Chunk resume and integrity checks.
-- Persistent outbox/inbox recovery after network, Obsidian or server interruption.
-- Optimistic revisions, idempotent operations, conflict copies, atomic rename and batch delete.
-- History/restore, per-device credentials, revocation, quotas, audit, doctor, ACK-aware GC and verified backups.
+- Syncs notes, images, attachments, Canvas files, themes, CSS, and plugins.
+- Supports Windows, macOS, Android, and iOS.
+- Handles multiple Vaults and devices, resumable transfers, conflicts, and history.
+- Provides a local Web console for Vaults, devices, logs, backups, and maintenance.
+- Persists all server data on the Windows host.
 
-Sync Tunnel's own plugin directory and `data.json` always remain device-local. Full mode may copy secrets stored by other plugins in their `data.json`; use Recommended unless you explicitly accept that risk.
+## Install the server
 
-## Architecture
-
-```mermaid
-flowchart LR
-    O[Obsidian plugin] -->|HTTPS + device credential| C[Cloudflare Tunnel / Access]
-    C --> F[Windows cloudflared]
-    F -->|127.0.0.1:8787| P[Public sync API]
-    A[Windows admin scripts] -->|127.0.0.1:8788 + Admin Token| M[Admin API]
-    P --> G[Go server]
-    M --> G
-    G --> S[(SQLite WAL + Chunk storage)]
-```
-
-Only the plugin is distributed through GitHub Releases/BRAT. Server binaries and public container images are not published; build the server locally from the same immutable Git Tag as the plugin.
-
-The [complete architecture document](docs/ARCHITECTURE.md) and most operating documentation are currently in Simplified Chinese.
-
-## Quick start
-
-On the Windows server:
+Install Docker Desktop, Git, and PowerShell on a Windows 10/11 computer. Download this repository, then run:
 
 ```powershell
-git clone --branch 1.0.0-rc.1 --depth 1 https://github.com/qoxop/obsidian-sync-tunnel.git
-Set-Location .\obsidian-sync-tunnel
-.\scripts\docker-init.ps1
-.\scripts\docker-up.ps1
-
-Invoke-RestMethod http://127.0.0.1:8787/healthz
-Invoke-RestMethod http://127.0.0.1:8788/healthz
-
-.\scripts\admin.ps1 -CreateVault -VaultId personal-notes -DisplayName 'Personal notes'
-.\scripts\admin.ps1 -CreatePairing -VaultId personal-notes
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\scripts\setup.ps1
 ```
 
-Configure a stable Cloudflare Public Hostname with origin `http://127.0.0.1:8787`. Never expose the Admin API on port `8788`.
+The script builds and starts the service, then opens <http://127.0.0.1:8788/admin/>. Run the same script after checking out a newer release. Normal administration does not require command-line tools.
 
-On each Obsidian device:
+## Configure Cloudflare Tunnel
 
-1. Install BRAT and add `https://github.com/qoxop/obsidian-sync-tunnel` as a beta plugin.
-2. Enable Sync Tunnel and open its setup wizard.
-3. Enter the HTTPS Server URL, logical Vault ID, device name and a newly generated one-time pairing code.
-4. Keep the Recommended profile, test the connection, review First sync preview and choose Safe merge.
-5. Run Sync now twice; the second run should report zero changes.
-6. Generate a different pairing code for every additional device.
+Create a Named Tunnel in Cloudflare Zero Trust, install its Windows connector, and add a Public Hostname whose origin is `http://127.0.0.1:8787`.
 
-The Admin Token is only for local Windows scripts. Never enter it into Obsidian.
+Confirm that `https://sync.example.com/healthz` returns `status: ok`. Never expose port `8788`. A stable hostname requires a domain connected to Cloudflare; Quick Tunnels are only for temporary testing.
 
-## Operations
+## Create a Vault and pair a device
 
-```powershell
-.\scripts\docker-logs.ps1 -Follow
-.\scripts\admin.ps1 -Doctor
-.\scripts\admin.ps1 -Stats
-.\scripts\docker-backup.ps1 -KeepLast 7
-```
+Open the local admin page and select **Vaults & devices**. Create a Vault, select **Pair**, and copy the one-time code. Generate a separate pairing code for every device.
 
-SQLite, paths, content, history, Chunks and backups are plaintext in 1.0. Use disk encryption, strict ACLs and an encrypted off-machine backup. Read the [Chinese deployment guide](docs/DOCKER_DEPLOYMENT.zh-CN.md) before restore or GC operations.
+The Vault ID identifies a server-side sync space, not a local folder.
 
-## Development
+## Install the Obsidian plugin
 
-```powershell
-go test ./...
-go vet ./...
-.\scripts\smoke-selftest.ps1
+Install and enable BRAT, choose **Add Beta plugin**, and enter `https://github.com/qoxop/obsidian-sync-tunnel`.
 
-Set-Location .\plugin
-npm ci
-npm run typecheck
-npm test
-npm run build
-```
+Enable **Sync Tunnel**, then use its setup wizard to enter the Cloudflare URL, Vault ID, device name, and pairing code. Keep the **Recommended** profile and **Safe merge** for the first sync. Run sync a second time and confirm every change counter is zero before enabling automatic sync.
 
-See [testing](docs/TESTING.md), the [1.0 protocol](docs/PROTOCOL_1.0.en.md), [manual acceptance](docs/MANUAL_ACCEPTANCE_1.0.en.md), and [security policy](SECURITY.md).
+## Daily administration
+
+Use <http://127.0.0.1:8788/admin/> to manage Vaults and devices, inspect logs, run data checks, create and verify backups, and execute two-phase garbage collection.
+
+Only disaster recovery requires stopping the service. See [Docker deployment and recovery](docs/DOCKER_DEPLOYMENT.zh-CN.md).
+
+## Important notes
+
+- Server data and backups are not end-to-end encrypted. Use disk encryption and an off-device encrypted backup.
+- The Full profile may copy secrets stored by other plugins; Recommended is the normal choice.
+- Never route the local admin port through Cloudflare or bind it to a LAN address.
+- Keep an independent copy of real Vaults until the release is fully validated.
+
+Technical details are in [ARCHITECTURE.md](docs/ARCHITECTURE.md), [PROTOCOL_1.0.en.md](docs/PROTOCOL_1.0.en.md), and [TESTING.md](docs/TESTING.md).
 
 ## License
 

@@ -4,6 +4,13 @@ All notable changes to Sync Tunnel are documented here. Semantic Versioning comp
 
 ## Unreleased
 
+### Administration
+
+- Added a loopback-only React/Ant Design management console for Vaults, devices, pairing, statistics, audit, runtime logs, doctor, backups, verification, and two-phase GC.
+- Made Admin Token authentication optional and disabled by default; tokenless mode still enforces loopback Host and same-origin requests, while Docker publishes the admin port only on `127.0.0.1`.
+- Replaced routine administration scripts with one `scripts/setup.ps1` entry point and the local Web console. Offline disaster recovery remains a dedicated script because a running service cannot safely replace its own SQLite data set.
+- Rewrote the README as a short installation and usage guide, with technical details kept in the architecture and protocol documents.
+
 ### Delivery
 
 - Limited public distribution to the unofficial Obsidian plugin through GitHub Releases and BRAT.

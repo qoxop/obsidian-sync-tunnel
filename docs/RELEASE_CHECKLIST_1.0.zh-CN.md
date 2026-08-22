@@ -11,7 +11,7 @@
 - [ ] 插件 `npm ci`、typecheck、test、build；
 - [ ] 10,000 文件显式测试；
 - [ ] Docker build 和 Compose config；
-- [ ] `node scripts/verify-plugin-release.mjs 1.0.0-rc.1 --artifacts`；
+- [ ] `node scripts/verify-plugin-release.mjs 1.0.0-rc.2 --artifacts`；
 - [ ] CI、Ubuntu race、CodeQL 和 Dependabot 无阻塞项；
 - [ ] Changelog、README、架构、协议、部署、测试、威胁模型和人工验收文档与代码一致。
 
@@ -28,15 +28,15 @@
 先检查差异，不复用或覆盖 Tag：
 
 ```powershell
-node .\scripts\set-plugin-version.mjs 1.0.0-rc.1
-node .\scripts\verify-plugin-release.mjs 1.0.0-rc.1 --artifacts
+node .\scripts\set-plugin-version.mjs 1.0.0-rc.2
+node .\scripts\verify-plugin-release.mjs 1.0.0-rc.2 --artifacts
 git diff --check
 git status --short
 # 精确暂存上面审查过的文件，不使用整仓库暂存命令
-git commit -m "Prepare Sync Tunnel 1.0.0-rc.1"
+git commit -m "Prepare Sync Tunnel 1.0.0-rc.2"
 git push origin main
-git tag -a 1.0.0-rc.1 -m "Sync Tunnel 1.0.0-rc.1"
-git push origin 1.0.0-rc.1
+git tag -a 1.0.0-rc.2 -m "Sync Tunnel 1.0.0-rc.2"
+git push origin 1.0.0-rc.2
 ```
 
 推 Tag 会自动：
@@ -65,7 +65,7 @@ git push origin 1.0.0-rc.1
 - [ ] 从干净目录执行一次全新安装文档；
 - [ ] 公开已知限制：1.0 服务端明文、不是备份、不支持 0.x 协议、不允许其他实时同步器共用 Vault。
 
-正式版重新运行版本脚本为 `1.0.0`，提交后打同名 annotated Tag。工作流只创建插件 Stable Release；服务端继续从同名 Tag 源码本地构建。绝不移动 `1.0.0-rc.1` Tag，也不在失败工作流上手工拼接不一致附件。
+正式版重新运行版本脚本为 `1.0.0`，提交后打同名 annotated Tag。工作流只创建插件 Stable Release；服务端继续从同名 Tag 源码本地构建。绝不移动已发布的 RC Tag，也不在失败工作流上手工拼接不一致附件。
 
 ## F. 发布后
 

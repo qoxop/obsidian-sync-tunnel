@@ -20,7 +20,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: plugin/package-lock.json
+          cache-dependency-path: |
+            plugin/package-lock.json
+            admin-web/package-lock.json
       - name: Validate plugin release metadata
         run: node scripts/verify-plugin-release.mjs
       - name: Go test
@@ -38,6 +40,18 @@ jobs:
         run: npm test
       - name: Bundle plugin
         working-directory: plugin
+        run: npm run build
+      - name: Install admin Web dependencies
+        working-directory: admin-web
+        run: npm ci
+      - name: Typecheck admin Web
+        working-directory: admin-web
+        run: npm run typecheck
+      - name: Test admin Web
+        working-directory: admin-web
+        run: npm test
+      - name: Bundle admin Web
+        working-directory: admin-web
         run: npm run build
 
   go-race:

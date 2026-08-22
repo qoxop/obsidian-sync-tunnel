@@ -218,12 +218,12 @@ func TestLimitsRateAndAdminAPI(t *testing.T) {
 		t.Fatalf("rate=%d %s", rateLimited.Code, rateLimited.Body)
 	}
 
-	admin := NewAdmin(server.db, "0123456789abcdefghijklmnopqrstuvwxyz-ADMIN", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	unauthorized := serve(admin, httptest.NewRequest(http.MethodGet, "/admin/v1/vaults", nil))
+	admin := NewAdmin(server.db, "0123456789abcdefghijklmnopqrstuvwxyz-ADMIN", AdminOptions{AuthRequired: true}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	unauthorized := serve(admin, newLocalAdminRequest(http.MethodGet, "/admin/v1/vaults", nil))
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("admin unauthorized=%d", unauthorized.Code)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/admin/v1/stats", nil)
+	request := newLocalAdminRequest(http.MethodGet, "/admin/v1/stats", nil)
 	request.Header.Set("Authorization", "Bearer 0123456789abcdefghijklmnopqrstuvwxyz-ADMIN")
 	stats := serve(admin, request)
 	if stats.Code != http.StatusOK || !bytes.Contains(stats.Body.Bytes(), []byte(`"vaults":1`)) {
@@ -239,7 +239,7 @@ func TestAdminVaultAndDeviceLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	const adminToken = "0123456789abcdefghijklmnopqrstuvwxyz-ADMIN"
-	admin := NewAdmin(db, adminToken, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	admin := NewAdmin(db, adminToken, AdminOptions{AuthRequired: true}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	adminRequest := func(method, target string, body any) *http.Request {
 		var reader io.Reader
 		if body != nil {
@@ -250,6 +250,7 @@ func TestAdminVaultAndDeviceLifecycle(t *testing.T) {
 			reader = bytes.NewReader(encoded)
 		}
 		request := httptest.NewRequest(method, target, reader)
+		request.Host = "127.0.0.1:8788"
 		request.Header.Set("Authorization", "Bearer "+adminToken)
 		return request
 	}
