@@ -1,6 +1,6 @@
 # Obsidian Sync Tunnel 完整开发方案
 
-> 本文记录 0.1 MVP 的目标和实现决策。0.2 及后续产品化工作以[产品路线图](PRODUCT_ROADMAP.zh-CN.md)、[Protocol v2 草案](PROTOCOL_V2.zh-CN.md)、[威胁模型](THREAT_MODEL.zh-CN.md)和[测试策略](TEST_STRATEGY.zh-CN.md)为准。
+> 历史文档：本文只记录 0.1 MVP，不可用于部署或配置 1.0。当前实现以[1.0 架构](ARCHITECTURE_1.0.zh-CN.md)、[1.0 协议](PROTOCOL_1.0.zh-CN.md)、[升级指引](UPGRADE_TO_1.0.zh-CN.md)和[人工验收](MANUAL_ACCEPTANCE_1.0.zh-CN.md)为准。
 
 ## 1. 目标与边界
 

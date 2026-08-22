@@ -1,69 +1,95 @@
 # Obsidian Sync Tunnel
 
-个人自托管的 Obsidian 全 Vault 同步项目：Go + SQLite 服务运行在 Windows Docker Desktop 中，通过 bind mount 把数据持久化到宿主机，并由 Cloudflare Tunnel 提供 HTTPS 入口。Obsidian 插件同步笔记、附件和 `.obsidian` 中的插件数据。
+[English](README.en.md) | 简体中文
 
-> 当前版本是需要在专用测试 Vault 验证的 MVP，不应替代独立备份。
+面向个人自托管的 Obsidian 全 Vault 同步：Go + SQLite 服务运行在 Windows Docker Desktop，数据通过 bind mount 持久化到 Windows 宿主机，Cloudflare Tunnel 提供 HTTPS 入口，Obsidian 插件覆盖 Windows、macOS、Android 和 iOS。
 
-项目正在从 0.1 MVP 向可日常使用的 1.0 演进。已确认的产品边界、版本计划和用户配合检查点见[产品路线图](docs/PRODUCT_ROADMAP.zh-CN.md)。
+当前代码版本为 `1.0.0-rc.1`。实现和自动化测试已经完成，进入人工验收阶段；在[人工验收清单](docs/MANUAL_ACCEPTANCE_1.0.zh-CN.md)全部通过前，不应用于唯一一份真实 Vault，也不应替代独立备份。
 
-## 从这里开始
+## 1.0 产品边界
 
-1. 阅读[产品路线图](docs/PRODUCT_ROADMAP.zh-CN.md)和[当前 MVP 开发方案](docs/DEVELOPMENT_PLAN.zh-CN.md)；
-2. 阅读[Docker 部署说明](docs/DOCKER_DEPLOYMENT.zh-CN.md)；
-3. 按[用户配合操作清单](docs/USER_ACTIONS.zh-CN.md)准备测试 Vault、Docker Desktop 和 Cloudflare；
-4. 运行 `scripts/docker-init.ps1` 和 `scripts/docker-up.ps1`；
-5. 如需在其他电脑在线安装插件，阅读[GitHub + BRAT 发布指引](docs/GITHUB_RELEASE.zh-CN.md)；
-6. 使用 Mac 作为第二台测试设备时，可运行[macOS 第二设备脚本化验收](docs/MACOS_SECOND_DEVICE_TEST.zh-CN.md)；
-7. 在两个测试 Vault 完成人工验收矩阵后，再考虑真实数据。
+- 单用户、多 Vault、多设备；
+- 默认“推荐安全模式”，可主动选择 Notes、Full Vault 或自定义范围；
+- 同步笔记、附件、图片、Canvas、主题、CSS 和其他插件程序；Full Vault 还会同步其他插件的 `data.json`；
+- Sync Tunnel 自身目录、凭据引用、工作区状态、缓存和临时文件始终保持设备本地；
+- 设备以一次性配对码加入，每台设备获得独立、可轮换、可撤销的范围凭据；
+- 支持分块断点续传、幂等操作、冲突副本、历史浏览/恢复、ACK 水位线、GC、在线备份/校验/恢复、配额和审计；
+- 1.0 服务端明文保存内容和路径，E2EE 留到 2.0。
 
-## 设计与质量文档
+## 最重要的协议规则
 
-- [产品路线图](docs/PRODUCT_ROADMAP.zh-CN.md)
-- [Protocol v2 草案](docs/PROTOCOL_V2.zh-CN.md)
+项目只实现一套最终 `/api/v1` 协议。`1.0.0-rc.1` 与所有 0.x 客户端、全局 API Token 和旧客户端状态不兼容；升级必须同时更换服务和插件、重新初始化服务数据并重新配对。项目不会为 pre-1.0 协议保留兼容分支。
+
+详见[1.0 升级指引](docs/UPGRADE_TO_1.0.zh-CN.md)和[1.0 协议](docs/PROTOCOL_1.0.zh-CN.md)。
+
+## 文档入口
+
+- [1.0 架构与代码边界](docs/ARCHITECTURE_1.0.zh-CN.md)
+- [1.0 最终协议](docs/PROTOCOL_1.0.zh-CN.md)
+- [Docker Desktop 部署与运维](docs/DOCKER_DEPLOYMENT.zh-CN.md)
+- [用户配合操作清单](docs/USER_ACTIONS.zh-CN.md)
+- [自动化测试与复现命令](docs/AUTOMATED_TESTS_1.0.zh-CN.md)
+- [1.0 人工验收清单](docs/MANUAL_ACCEPTANCE_1.0.zh-CN.md)
+- [1.0 RC 发布清单](docs/RELEASE_CHECKLIST_1.0.zh-CN.md)
+- [GitHub、GHCR 与 BRAT 发布](docs/GITHUB_RELEASE.zh-CN.md)
 - [威胁模型](docs/THREAT_MODEL.zh-CN.md)
-- [测试策略](docs/TEST_STRATEGY.zh-CN.md)
-- [从 0.1 升级到 0.2](docs/UPGRADE_0.2.zh-CN.md)
-- [升级到 0.3.0 Beta](docs/UPGRADE_0.3-BETA.zh-CN.md)
-- [macOS 第二设备脚本化验收](docs/MACOS_SECOND_DEVICE_TEST.zh-CN.md)
-- [0.3 Beta 人工验收记录](docs/BETA_ACCEPTANCE_0.3.zh-CN.md)
 
-## 通过 GitHub 安装插件
+旧 0.x 设计和验收文档只作为历史记录，不能用于配置 1.0。
 
-插件不必提交到 Obsidian 官方市场。仓库推送 `x.y.z` 标签后，GitHub Actions 会自动构建 Release；其他电脑安装 BRAT 后添加本仓库地址即可安装和更新。Release 发布、版本升级和旧测试版迁移步骤见[GitHub + BRAT 发布指引](docs/GITHUB_RELEASE.zh-CN.md)。
-
-## Docker 部署速览
-
-```powershell
-.\scripts\docker-init.ps1
-.\scripts\docker-up.ps1
-Invoke-RestMethod http://127.0.0.1:8787/healthz
-```
-
-默认宿主机数据位于 `runtime-data`，Token 位于 `secrets/api-token.txt`；两者都不会提交 Git。关闭容器不会删除这些 bind-mounted 文件。
-
-## 本地开发速览
+## 开发者快速验证
 
 ```powershell
 go test ./...
-go run .\cmd\obsidian-sync-server token
-Set-Content -NoNewline .\dev-token.txt '<生成的 token>'
-go run .\cmd\obsidian-sync-server serve --token-file .\dev-token.txt --database .\data\sync.db
-```
+go vet ./...
+.\scripts\smoke-selftest.ps1
 
-另一个终端：
-
-```powershell
 Set-Location .\plugin
-npm install
+npm ci
 npm run typecheck
+npm test
 npm run build
 ```
 
+10,000 文件规模测试需要显式开启：
+
+```powershell
+$env:OBSIDIAN_SYNC_SCALE_TEST='1'
+go test .\internal\store -run '^TestScaleTenThousandFiles$' -count=1 -v
+```
+
+## Docker 快速启动
+
+以下命令只适用于完成[不兼容升级准备](docs/UPGRADE_TO_1.0.zh-CN.md)后的 1.0 测试环境：
+
+```powershell
+.\scripts\docker-init.ps1 -ForceConfig
+.\scripts\docker-up.ps1
+Invoke-RestMethod http://127.0.0.1:8787/healthz
+Invoke-RestMethod http://127.0.0.1:8788/healthz
+```
+
+默认映射为：
+
+- 公共同步端口 `127.0.0.1:8787`，Cloudflare Tunnel 只连接此端口；
+- 本地管理端口 `127.0.0.1:8788`，禁止配置为 Cloudflare Public Hostname；
+- 数据 `runtime-data/`；
+- 备份 `runtime-backups/`；
+- 本地管理员密钥 `secrets/admin-token.txt`，只用于 Windows 管理脚本，不填入 Obsidian。
+
+创建逻辑 Vault 和一次性配对码：
+
+```powershell
+.\scripts\admin.ps1 -CreateVault -VaultId personal-notes -DisplayName 'Personal notes'
+.\scripts\admin.ps1 -CreatePairing -VaultId personal-notes
+```
+
+把第二条命令临时显示的配对码填入插件设置向导；不要把 Admin Token 或配对后的设备凭据复制到普通笔记。
+
 ## 安全摘要
 
-- 服务默认监听 `127.0.0.1:8787`；
-- 容器内监听非回环地址需要显式安全开关，宿主机端口固定绑定 `127.0.0.1`；
-- API 使用随机 Bearer Token，可叠加 Cloudflare Access Service Token；
-- Obsidian 侧密钥进入 SecretStorage；
-- 同步插件自己的 `data.json` 被强制排除；
-- SQLite 内容未端到端加密，请使用磁盘加密、ACL 和独立备份。
+- 宿主机公共端口和管理端口都固定绑定回环地址；管理端口不穿透；
+- Cloudflare Access 是推荐的第二层保护，但不能取代设备凭据；
+- 插件凭据只进入 Obsidian SecretStorage；服务端只保存哈希；
+- 日志和诊断不记录 Token、Secret、正文或完整路径；
+- SQLite、Chunk、历史和备份含明文 Vault 数据，必须使用 BitLocker/FileVault、严格 ACL 和异机加密备份；
+- GC 只有“生成计划 + 校验计划哈希 + 执行”两阶段，不把历史恢复当作备份。

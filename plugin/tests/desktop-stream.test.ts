@@ -89,14 +89,17 @@ describe("desktop Chunk streaming", () => {
           serverUrl: "https://sync.example.com",
           vaultId: "test-vault",
           deviceId: "test-device",
-          apiTokenSecretName: "token",
+          deviceName: "Test device",
+          credentialSecretName: "token",
           accessClientId: "",
           accessClientSecretName: "",
           automaticSync: false,
           syncOnStartup: false,
           syncIntervalSeconds: 300,
           syncProfile: "full",
-          excludedPatterns: []
+          excludedPatterns: [],
+          language: "zh-CN",
+          mobileMaxFileBytes: 32 * 1024 * 1024
         },
         cursor: 1,
         filterFingerprint: scanner.filterFingerprint(),
@@ -110,11 +113,22 @@ describe("desktop Chunk streaming", () => {
         lastIntegrityScanAt: now,
         outbox: {},
         inbox: {},
-        pendingRenames: {}
+        pendingRenames: {},
+        paused: false,
+        activities: [],
+        conflicts: [],
+        lastAcknowledgedRevision: 0
       };
       const client = {
-        serverInfo: async () => ({ capabilities: ["chunk-download-v1"], limits: { chunk_size: 4 } }),
-        status: async () => ({ latest_revision: 2, max_upload_bytes: 1024 }),
+        serverInfo: async () => ({
+          server_version: "test",
+          protocol: { version: 1 },
+          capabilities: ["snapshot", "idempotent-operations", "chunk-transfer", "rename", "batch-delete", "device-ack"],
+          database: { schema_version: 7 },
+          limits: { max_file_bytes: 1024, max_page_size: 1000, chunk_size: 4, max_chunk_query: 1000, chunk_concurrency: 2 }
+        }),
+        status: async () => ({ latest_revision: 2, max_file_bytes: 1024 }),
+        acknowledge: async () => undefined,
         listChanges: async () => ({ changes: [remote], cursor: 2, has_more: false }),
         findManifest: async () => ({ size: content.byteLength, chunks }),
         downloadChunk: async (hash: string) => {

@@ -1,13 +1,15 @@
 # Build output
 /dist/
+/obsidian-sync-server.exe
 /plugin/main.js
 /plugin/node_modules/
 
 # Runtime data and secrets
 /data/
 /dev-token.txt
-/runtime-data/
-/runtime-backups/
+/runtime-data*/
+/runtime-backups*/
+/rollback/
 /secrets/
 *.db
 *.db-shm

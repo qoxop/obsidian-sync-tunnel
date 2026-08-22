@@ -47,6 +47,13 @@ func (a *API) putChunk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "read_failed", "could not read chunk body")
 		return
 	}
+	if r.ContentLength <= 0 {
+		if allowed, retry := a.limiter.chargeBytes(requestPrincipal(r).TokenID, int64(len(data))); !allowed {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", retry))
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "device byte limit exceeded")
+			return
+		}
+	}
 	changed, err := a.store.PutChunk(r.Context(), r.PathValue("hash"), data)
 	if err != nil {
 		writeStoreError(w, err)
@@ -60,7 +67,7 @@ func (a *API) getChunk(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	data, err := a.store.GetChunk(r.Context(), r.PathValue("hash"))
+	data, err := a.store.GetChunkForVault(r.Context(), r.PathValue("vault"), r.PathValue("hash"))
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "not_found", "chunk not found")
 		return
@@ -109,8 +116,12 @@ func (a *API) commitManifest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid manifest request")
 		return
 	}
-	if request.Size < 1 || request.Size > a.maxUploadBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "file_too_large", fmt.Sprintf("file must be between 1 and %d bytes", a.maxUploadBytes))
+	if request.Size < 1 || request.Size > a.maxFileBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "file_too_large", fmt.Sprintf("file must be between 1 and %d bytes", a.maxFileBytes))
+		return
+	}
+	if err := a.store.CheckCommitAllowed(r.Context(), r.PathValue("vault"), r.URL.Query().Get("path"), request.Size); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 	contentHash := r.Header.Get("X-Content-SHA256")

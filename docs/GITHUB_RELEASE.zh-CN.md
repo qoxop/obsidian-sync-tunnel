@@ -1,83 +1,64 @@
-# 通过 GitHub 和 BRAT 分发插件
+# GitHub、GHCR 与 BRAT 分发
 
-本项目不需要进入 Obsidian 官方社区目录。GitHub 保存源码和 Release，其他电脑使用 BRAT 根据仓库地址安装并检查更新。
+项目无需进入 Obsidian 官方市场。GitHub 保存源码和 Release，GHCR 保存多架构服务镜像，BRAT 从 GitHub Release 在线安装插件。
 
-## Beta 候选版
+## 版本与兼容
 
-正式 Obsidian 插件版本保持 `x.y.z`。项目测试版本使用 `x.y.z-beta.n` GitHub 预发布，并通过 BRAT 1.1 或更高版本安装。候选版版本号只存在于独立 release commit/tag，不写入默认分支的 `manifest.json`，避免普通 Obsidian 更新通道误把 beta 当作稳定更新。
+RC 使用 `1.0.0-rc.N` 并标记 Pre-release；正式版使用 `1.0.0`。Tag、根/插件 manifest、根/插件 versions、npm package 和 lock 必须完全一致。Tag 不加 `v`，不得移动、覆盖或复用。
 
-测试者在 BRAT 中添加 `qoxop/obsidian-sync-tunnel` 并选择最新预发布或冻结到指定 beta 标签。正式版发布后，beta 测试者应通过 BRAT 主动切换；Obsidian 本身不保证从同一基础版本的 prerelease 自动升级到 stable。
+pre-1.0 客户端/服务协议不兼容。用户更新到 1.0 必须同时更新服务和插件，并按[升级指引](UPGRADE_TO_1.0.zh-CN.md)重新配对。
 
-## 1. 创建并关联 GitHub 仓库
-
-在 GitHub 创建一个空的公开仓库，不要初始化 README、LICENSE 或 `.gitignore`。然后在本仓库根目录运行：
+## 本地准备
 
 ```powershell
-git remote add origin https://github.com/<GitHub 用户名>/<仓库名>.git
-git push -u origin main
+node .\scripts\set-plugin-version.mjs 1.0.0-rc.1
+Set-Location .\plugin
+npm ci
+npm run typecheck
+npm test
+npm run build
+Set-Location ..
+node .\scripts\verify-plugin-release.mjs 1.0.0-rc.1 --artifacts
 ```
 
-仓库名可以继续使用 `obsidian-sync-tunnel`；插件内部 ID 已固定为 `sync-tunnel`，二者不要求相同。
+发布工作流附件：`main.js`、`manifest.json`、`styles.css`、`SHA256SUMS.txt`、`plugin-sbom.cdx.json`。同时构建 `linux/amd64`/`linux/arm64` GHCR image，附 provenance/SBOM 并对 digest 做 Cosign keyless 签名。
 
-## 2. 发布第一个版本
+## 创建 Release
 
-根目录和 `plugin` 目录的 manifest、versions 以及 npm 包版本必须一致。版本升级使用仓库脚本统一修改：
+先完成[发布清单](RELEASE_CHECKLIST_1.0.zh-CN.md)和人工验收。管理员执行 commit/push/tag；Tag 推送触发 `.github/workflows/release-plugin.yml`。RC 不更新 GHCR `latest`，stable 才更新。
+
+失败的工作流应修复代码并增加新版本，不能手工拼出与 Tag 源码不一致的 Release，也不要强制移动旧 Tag。
+
+## BRAT 安装
+
+在另一设备：
+
+1. 安装并启用 BRAT；
+2. Settings > BRAT > Add Beta plugin；
+3. 输入 `https://github.com/qoxop/obsidian-sync-tunnel`；
+4. RC 测试选择/固定目标 prerelease，Stable 用户跟随正式 Release；
+5. 启用 Sync Tunnel，使用管理端为这台设备新生成的一次性配对码；
+6. 完成首次预览并手动同步两次。
+
+BRAT 只安装插件程序，不复制配置、凭据或客户端状态。找不到版本时检查仓库是否公开、Release 是否存在、三个附件是否独立上传、Tag 是否与 manifest 一致，以及 BRAT 是否允许 prerelease。
+
+## GHCR 部署
+
+RC：
 
 ```powershell
-node .\scripts\set-plugin-version.mjs 0.1.0
-node .\scripts\verify-plugin-release.mjs
-git add manifest.json versions.json plugin .github scripts docs README.md
-git commit -m "Prepare plugin release 0.1.0"
-git push origin main
-git tag 0.1.0
-git push origin 0.1.0
+docker pull ghcr.io/qoxop/obsidian-sync-tunnel:1.0.0-rc.1
 ```
 
-标签必须是纯 `x.y.z`，并与 `manifest.json` 的 `version` 完全相同，不要添加 `v` 前缀。
+正式版可固定 `1.0.0`；生产环境不建议只写 `latest`，因为固定版本更容易审计和回滚。Compose 的默认本地 build 保留，若改用 GHCR image，应删除/禁用 build 并明确 image Tag，同时保持宿主机 bind mount 和两个回环端口不变。
 
-推送标签后，GitHub Actions 会执行类型检查和构建，并创建同名 Release。Release 中会有 BRAT 使用的：
-
-```text
-main.js
-manifest.json
-styles.css
-```
-
-在 GitHub 仓库的 **Actions** 和 **Releases** 页面确认工作流成功。首次推送前无需手工创建 Release。
-
-## 3. 其他电脑通过 BRAT 安装
-
-1. 在 Obsidian 的社区插件市场安装并启用 **BRAT**；
-2. 打开 **Settings > BRAT > Add Beta plugin**；
-3. 输入完整仓库地址 `https://github.com/<用户名>/<仓库名>`；
-4. 安装完成后启用 **Sync Tunnel**；
-5. 配置 Server URL、Vault ID、该电脑唯一的 Device ID 和密钥。
-
-如果 BRAT 报告找不到版本，依次检查仓库是否公开、Release 是否存在、三个文件是否作为独立附件存在，以及标签是否与 manifest 版本一致。
-
-## 4. 发布后续更新
-
-每个新版本都先提交版本变更，再给该提交打同名标签：
+## 产物验证
 
 ```powershell
-node .\scripts\set-plugin-version.mjs 0.1.1
-node .\scripts\verify-plugin-release.mjs
-git add manifest.json versions.json plugin
-git commit -m "Release plugin 0.1.1"
-git push origin main
-git tag 0.1.1
-git push origin 0.1.1
+Get-FileHash .\main.js -Algorithm SHA256
+Get-FileHash .\manifest.json -Algorithm SHA256
+Get-FileHash .\styles.css -Algorithm SHA256
+docker buildx imagetools inspect ghcr.io/qoxop/obsidian-sync-tunnel:1.0.0-rc.1
 ```
 
-BRAT 会根据其更新设置检查新的 GitHub Release。不要复用或覆盖已发布的版本号。
-
-## 5. 从旧的本地测试版迁移
-
-早期测试版目录名是 `.obsidian/plugins/obsidian-sync-tunnel`，GitHub 版目录名是 `.obsidian/plugins/sync-tunnel`。迁移时：
-
-1. 禁用旧插件并关闭 Obsidian；
-2. 备份旧目录的 `data.json`，或准备重新填写插件设置；
-3. 使用 BRAT 安装新版，确认配置和手工同步正常；
-4. 删除旧插件目录，避免同时加载两个副本。
-
-新版仍会排除旧目录的 `data.json`，避免迁移期间意外同步本机密钥引用；但旧目录确认无用后仍应移除。
+checksum 应与 Release `SHA256SUMS.txt` 一致。GitHub Attestations 页面验证构建来源；Cosign 验证时限定 GitHub Actions issuer 和仓库 workflow identity，不能只看到“有签名”就信任任意身份。

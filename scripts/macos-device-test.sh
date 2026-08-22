@@ -5,7 +5,8 @@ IFS=$'\n\t'
 
 REPOSITORY="qoxop/obsidian-sync-tunnel"
 PLUGIN_ID="sync-tunnel"
-DEFAULT_VERSION="0.3.0-beta.3"
+DEFAULT_VERSION="1.0.0-rc.1"
+EXPECTED_DATA_SCHEMA="9"
 PROBE_ROOT="_sync-tunnel-verification"
 
 COMMAND=""
@@ -42,8 +43,8 @@ Commands:
   check-resume-interrupted Confirm that a quit left a resumable put in the outbox.
   verify-resume-probe Verify the resumed upload, queues and local content hash.
 
-The script never asks for or stores API Token or Cloudflare secrets. Enter those
-only through Obsidian SecretStorage when the guided flow pauses.
+The script never asks for or stores pairing codes, device credentials or
+Cloudflare secrets. Enter those only through Obsidian when the guided flow pauses.
 EOF
 }
 
@@ -180,7 +181,7 @@ fields = [
     ("server_configured", boolean(bool(settings.get("serverUrl")))),
     ("vault_configured", boolean(bool(settings.get("vaultId")))),
     ("device_configured", boolean(bool(settings.get("deviceId")))),
-    ("api_token_linked", boolean(bool(settings.get("apiTokenSecretName")))),
+    ("credential_linked", boolean(bool(settings.get("credentialSecretName")))),
     ("sync_profile", settings.get("syncProfile", "")),
     ("automatic_sync", boolean(settings.get("automaticSync"))),
     ("initial_sync_completed", boolean(data.get("initialSyncCompleted"))),
@@ -192,6 +193,9 @@ fields = [
     ("outbox", object_count(data.get("outbox"))),
     ("inbox", object_count(data.get("inbox"))),
     ("pending_renames", object_count(data.get("pendingRenames"))),
+    ("conflicts", len(data.get("conflicts")) if isinstance(data.get("conflicts"), list) else 0),
+    ("paused", boolean(data.get("paused"))),
+    ("ack_revision", data.get("lastAcknowledgedRevision", 0)),
     ("needs_full_scan", boolean(data.get("needsFullScan"))),
 ]
 for key, value in fields:
@@ -227,7 +231,7 @@ function run(argv) {
     ["server_configured", bool(Boolean(settings.serverUrl))],
     ["vault_configured", bool(Boolean(settings.vaultId))],
     ["device_configured", bool(Boolean(settings.deviceId))],
-    ["api_token_linked", bool(Boolean(settings.apiTokenSecretName))],
+    ["credential_linked", bool(Boolean(settings.credentialSecretName))],
     ["sync_profile", settings.syncProfile || ""],
     ["automatic_sync", bool(settings.automaticSync)],
     ["initial_sync_completed", bool(data.initialSyncCompleted)],
@@ -239,6 +243,9 @@ function run(argv) {
     ["outbox", count(data.outbox)],
     ["inbox", count(data.inbox)],
     ["pending_renames", count(data.pendingRenames)],
+    ["conflicts", Array.isArray(data.conflicts) ? data.conflicts.length : 0],
+    ["paused", bool(data.paused)],
+    ["ack_revision", data.lastAcknowledgedRevision || 0],
     ["needs_full_scan", bool(data.needsFullScan)],
   ];
   return fields.map(item => item[0] + "\t" + String(item[1])).join("\n");
@@ -293,7 +300,10 @@ status_client() {
   value="$(summary_value "$summary" plugin_version)"
   print_check "Plugin version" "$([[ "$value" == "$VERSION" ]] && printf true || printf false)" "$value (expected $VERSION)" || failures=$((failures + 1))
 
-  for field in server_configured vault_configured device_configured api_token_linked initial_sync_completed; do
+  value="$(summary_value "$summary" schema_version)"
+  print_check "Client data schema" "$([[ "$value" == "$EXPECTED_DATA_SCHEMA" ]] && printf true || printf false)" "$value (expected $EXPECTED_DATA_SCHEMA)" || failures=$((failures + 1))
+
+  for field in server_configured vault_configured device_configured credential_linked initial_sync_completed; do
     value="$(summary_value "$summary" "$field")"
     print_check "$field" "$value" "$value" || failures=$((failures + 1))
   done
@@ -314,6 +324,15 @@ status_client() {
     value="$(summary_value "$summary" "$field")"
     print_check "$field" "$([[ "$value" == "0" ]] && printf true || printf false)" "$value" || failures=$((failures + 1))
   done
+
+  value="$(summary_value "$summary" paused)"
+  print_check "Sync paused" "$([[ "$value" == "false" ]] && printf true || printf false)" "$value" || failures=$((failures + 1))
+
+  value="$(summary_value "$summary" ack_revision)"
+  print_check "ACK revision" "$([[ "$value" =~ ^[0-9]+$ && "$value" -ge "$cursor" ]] && printf true || printf false)" "$value (cursor $cursor)" || failures=$((failures + 1))
+
+  value="$(summary_value "$summary" conflicts)"
+  info "Recorded conflicts: $value (resolve any open item in Obsidian before release acceptance)"
 
   value="$(summary_value "$summary" needs_full_scan)"
   print_check "Full scan settled" "$([[ "$value" == "false" ]] && printf true || printf false)" "$value" || failures=$((failures + 1))
@@ -846,7 +865,7 @@ run_guided() {
     open -a Obsidian >/dev/null 2>&1 || warn "Could not launch Obsidian automatically"
   fi
 
-  pause_for_user "In Obsidian, open this empty Vault and enable Sync Tunnel. Configure the same Server URL and Vault ID as device A, keep this Mac's unique Device ID, bind the API Token in SecretStorage, keep Automatic sync off, click Test, inspect First sync preview, choose Recommended safe, then click Sync now twice. Do not paste any secret into this terminal."
+  pause_for_user "In Obsidian, open this empty Vault and enable Sync Tunnel. Run the setup wizard with the same Server URL and logical Vault ID as device A, a new one-time pairing code for this Mac, and Recommended safe. The server assigns the Device ID and stores its credential in SecretStorage. Keep Automatic sync off, click Test, inspect First sync preview, choose safe merge, then click Sync now twice. Do not paste any secret into this terminal."
   while ! status_client; do
     warn "Initial Mac sync is not ready yet. The plugin creates data.json as soon as it is enabled in the target Vault."
     pause_for_user "Return to the same target Vault in Obsidian, enable Sync Tunnel if necessary, finish its configuration and first sync, then come back here. Press Control-C if you want to stop instead."

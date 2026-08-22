@@ -1,6 +1,6 @@
 import { DataAdapter, Vault } from "obsidian";
 
-import { sha256 } from "./hash";
+import { hashVaultFile } from "./file-io";
 import { assertNoPortablePathCollisions, globMatches, normalizeVaultPath, pathIsWithin } from "./path";
 import { LocalFile, ScanCacheEntry, SyncProfile } from "./types";
 
@@ -39,7 +39,7 @@ export class VaultScanner {
         && cached.modifiedAt === stat.mtime;
       const hash = canReuseHash
         ? cached.hash
-        : await sha256(await this.adapter.readBinary(path));
+		: await hashVaultFile(this.vault, path);
       entries.set(path, {
         path,
         hash,

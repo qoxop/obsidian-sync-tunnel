@@ -2,7 +2,6 @@
 [CmdletBinding()]
 param(
     [string]$InstallDirectory = "C:\ProgramData\ObsidianSyncTunnel",
-    [string]$ServiceName = "ObsidianSyncTunnel",
     [string]$DestinationDirectory = ""
 )
 
@@ -13,35 +12,20 @@ if (-not $DestinationDirectory) {
 }
 $InstallDirectory = [System.IO.Path]::GetFullPath($InstallDirectory)
 $DestinationDirectory = [System.IO.Path]::GetFullPath($DestinationDirectory)
-$databasePath = Join-Path $InstallDirectory "data\sync.db"
-$configPath = Join-Path $InstallDirectory "config.json"
-if (-not (Test-Path -LiteralPath $databasePath -PathType Leaf)) { throw "Database not found: $databasePath" }
-
+$tokenPath = Join-Path $InstallDirectory "admin-token.txt"
+$token = [System.IO.File]::ReadAllText($tokenPath).Trim()
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $backupPath = Join-Path $DestinationDirectory $stamp
-New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
-$service = Get-Service -Name $ServiceName -ErrorAction Stop
-$wasRunning = $service.Status -eq "Running"
+$headers = @{ Authorization = "Bearer $token" }
 try {
-    if ($wasRunning) {
-        Stop-Service -Name $ServiceName
-        (Get-Service -Name $ServiceName).WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
-    }
-    Copy-Item -LiteralPath $databasePath -Destination (Join-Path $backupPath "sync.db")
-    if (Test-Path -LiteralPath $configPath -PathType Leaf) {
-        Copy-Item -LiteralPath $configPath -Destination (Join-Path $backupPath "config.json")
-    }
+    $body = @{ destination = $backupPath } | ConvertTo-Json -Compress
+    $null = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8788/admin/v1/backups" -Headers $headers -ContentType "application/json" -Body $body
 } finally {
-    if ($wasRunning) { Start-Service -Name $ServiceName }
+    $token = $null
+    $headers = $null
 }
-
-$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $backupPath "sync.db")).Hash.ToLowerInvariant()
-$metadata = [ordered]@{
-    created_at = (Get-Date).ToUniversalTime().ToString("o")
-    source = $databasePath
-    sha256 = $hash
-    includes_token = $false
-}
-[System.IO.File]::WriteAllText((Join-Path $backupPath "backup.json"), ($metadata | ConvertTo-Json), [System.Text.UTF8Encoding]::new($false))
-Write-Host "Consistent backup created: $backupPath"
-Write-Warning "The database contains plaintext vault content. Copy the backup to encrypted storage on another device."
+$binary = Join-Path $InstallDirectory "bin\obsidian-sync-server.exe"
+& $binary verify-backup --directory $backupPath
+if ($LASTEXITCODE -ne 0) { throw "Backup verification failed" }
+Write-Host "Verified online backup created: $backupPath"
+Write-Warning "The backup contains plaintext Vault content. Replicate it to encrypted storage on another device."

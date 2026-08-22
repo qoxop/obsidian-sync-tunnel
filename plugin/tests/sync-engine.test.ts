@@ -27,8 +27,9 @@ describe("SyncEngine snapshot reconciliation", () => {
     };
     let uploadedConflict = "";
     const client = {
-      serverInfo: async () => ({ capabilities: [] }),
-      status: async () => ({ latest_revision: 5, max_upload_bytes: 1024 }),
+      serverInfo: async () => finalServerInfo(),
+      status: async () => ({ latest_revision: 5, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       listSnapshot: async () => ({
         files: [remoteChange],
         snapshot_revision: 5,
@@ -66,14 +67,17 @@ describe("SyncEngine snapshot reconciliation", () => {
         serverUrl: "https://sync.example.com",
         vaultId: "test-vault",
         deviceId: "test-device",
-        apiTokenSecretName: "token",
+        deviceName: "Test device",
+        credentialSecretName: "token",
         accessClientId: "",
         accessClientSecretName: "",
         automaticSync: false,
         syncOnStartup: false,
         syncIntervalSeconds: 300,
         syncProfile: "full",
-        excludedPatterns: []
+        excludedPatterns: [],
+        language: "zh-CN",
+        mobileMaxFileBytes: 32 * 1024 * 1024
       },
       cursor: 0,
       filterFingerprint: "old-filter",
@@ -87,7 +91,11 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastIntegrityScanAt: 0,
       outbox: {},
       inbox: {},
-      pendingRenames: {}
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 0
     };
     let persistCount = 0;
     const engine = new SyncEngine(vault, data, client, scanner, async () => {
@@ -140,8 +148,9 @@ describe("SyncEngine snapshot reconciliation", () => {
     let uploadedBase = 0;
     let deletedBase = 0;
     const client = {
-      serverInfo: async () => ({ capabilities: [] }),
-      status: async () => ({ latest_revision: 5, max_upload_bytes: 1024 }),
+      serverInfo: async () => finalServerInfo(),
+      status: async () => ({ latest_revision: 5, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       listSnapshot: async () => ({ files: snapshot, snapshot_revision: 5, cursor: "remote-only.md", has_more: false }),
       putFile: async (path: string, baseRevision: number, modifiedAt: number, hash: string, content: ArrayBuffer) => {
         uploadedBase = baseRevision;
@@ -192,7 +201,11 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastIntegrityScanAt: 0,
       outbox: {},
       inbox: {},
-      pendingRenames: {}
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 0
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -215,8 +228,9 @@ describe("SyncEngine snapshot reconciliation", () => {
     const scanner = new VaultScanner(vault, [], []);
     let uploadedPath = "";
     const client = {
-      serverInfo: async () => ({ capabilities: [] }),
-      status: async () => ({ latest_revision: 0, max_upload_bytes: 1024 }),
+      serverInfo: async () => finalServerInfo(),
+      status: async () => ({ latest_revision: 0, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       listSnapshot: async () => ({ files: [], snapshot_revision: 0, cursor: "", has_more: false }),
       putFile: async (path: string, _baseRevision: number, modifiedAt: number, hash: string, content: ArrayBuffer) => {
         uploadedPath = path;
@@ -253,7 +267,11 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastIntegrityScanAt: 0,
       outbox: {},
       inbox: {},
-      pendingRenames: {}
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 0
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -278,8 +296,9 @@ describe("SyncEngine snapshot reconciliation", () => {
     const now = Date.now();
     const deletedPaths: string[] = [];
     const client = {
-      serverInfo: async () => ({ capabilities: [] }),
-      status: async () => ({ latest_revision: 2, max_upload_bytes: 1024 }),
+      serverInfo: async () => finalServerInfo(),
+      status: async () => ({ latest_revision: 2, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       deleteFile: async (path: string, baseRevision: number) => {
         deletedPaths.push(path);
         expect(baseRevision).toBe(1);
@@ -321,7 +340,11 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastIntegrityScanAt: now,
       outbox: {},
       inbox: {},
-      pendingRenames: {}
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 0
     };
     const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
 
@@ -358,11 +381,16 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastIntegrityScanAt: now,
       outbox: {},
       inbox: {},
-      pendingRenames: {}
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 0
     };
     const client = {
-      serverInfo: async () => ({ capabilities: [] }),
-      status: async () => ({ latest_revision: 1, max_upload_bytes: 1024 }),
+      serverInfo: async () => finalServerInfo(),
+      status: async () => ({ latest_revision: 1, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       putFile: async () => {
         throw new Error("Unexpected upload");
       },
@@ -425,15 +453,20 @@ describe("SyncEngine snapshot reconciliation", () => {
         }
       },
       inbox: {},
-      pendingRenames: {}
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 0
     };
     const client = {
-      serverInfo: async () => ({ capabilities: ["operation-id"] }),
+      serverInfo: async () => finalServerInfo(),
       findOperation: async (id: string) => {
         expect(id).toBe(operationId);
         return { change: committed, changed: true };
       },
-      status: async () => ({ latest_revision: 5, max_upload_bytes: 1024 }),
+      status: async () => ({ latest_revision: 5, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       putFile: async () => {
         throw new Error("A committed operation must not be uploaded again");
       },
@@ -477,13 +510,18 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastIntegrityScanAt: 0,
       outbox: {},
       inbox: {},
-      pendingRenames: {}
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 0
     };
     let stagedBeforeRequest = false;
     const client = {
-      serverInfo: async () => ({ capabilities: ["operation-id"] }),
+      serverInfo: async () => finalServerInfo(),
       findOperation: async () => null,
-      status: async () => ({ latest_revision: 0, max_upload_bytes: 1024 }),
+      status: async () => ({ latest_revision: 0, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       putFile: async (_path: string, _base: number, modifiedAt: number, requestHash: string, requestContent: ArrayBuffer, operationId: string) => {
         stagedBeforeRequest = Object.hasOwn(data.outbox, operationId);
         expect(requestHash).toBe(hash);
@@ -554,11 +592,16 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastIntegrityScanAt: now,
       outbox: {},
       inbox: {},
-      pendingRenames: {}
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 0
     };
     const client = {
-      serverInfo: async () => ({ capabilities: [] }),
-      status: async () => ({ latest_revision: 2, max_upload_bytes: 1024 }),
+      serverInfo: async () => finalServerInfo(),
+      status: async () => ({ latest_revision: 2, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       listChanges: async () => ({ changes: [remote], cursor: 2, has_more: false }),
       downloadBlob: async () => corrupted,
       putFile: async () => {
@@ -622,11 +665,16 @@ describe("SyncEngine snapshot reconciliation", () => {
           createdAt: 1
         }
       },
-      pendingRenames: {}
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 0
     };
     const client = {
-      serverInfo: async () => ({ capabilities: [] }),
-      status: async () => ({ latest_revision: 2, max_upload_bytes: 1024 }),
+      serverInfo: async () => finalServerInfo(),
+      status: async () => ({ latest_revision: 2, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       listChanges: async () => ({ changes: [], cursor: 2, has_more: false }),
       downloadBlob: async () => {
         throw new Error("Verified inbox content must not be downloaded again");
@@ -672,17 +720,19 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastIntegrityScanAt: 0,
       outbox: {},
       inbox: {},
-      pendingRenames: {}
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 0
     };
     let requestedHashes: string[] = [];
     const uploadedHashes: string[] = [];
     const client = {
-      serverInfo: async () => ({
-        capabilities: ["operation-id", "chunk-upload-v1"],
-        limits: { chunk_size: 4, chunk_concurrency: 2, max_chunk_query: 1000 }
-      }),
+      serverInfo: async () => finalServerInfo(4),
       findOperation: async () => null,
-      status: async () => ({ latest_revision: 0, max_upload_bytes: 1024 }),
+      status: async () => ({ latest_revision: 0, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       missingChunks: async (hashes: string[]) => {
         requestedHashes = hashes;
         return hashes.slice(1);
@@ -761,14 +811,16 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastIntegrityScanAt: 0,
       outbox: {},
       inbox: {},
-      pendingRenames: {}
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 0
     };
     const client = {
-      serverInfo: async () => ({
-        capabilities: ["chunk-download-v1"],
-        limits: { chunk_size: 4, chunk_concurrency: 2, max_chunk_query: 1000 }
-      }),
-      status: async () => ({ latest_revision: 2, max_upload_bytes: 1024 }),
+      serverInfo: async () => finalServerInfo(4),
+      status: async () => ({ latest_revision: 2, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       listChanges: async () => ({ changes: [remote], cursor: 2, has_more: false }),
       findManifest: async (hash: string) => {
         expect(hash).toBe(remoteHash);
@@ -824,12 +876,17 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastIntegrityScanAt: now,
       outbox: {},
       inbox: {},
-      pendingRenames: { [renameId]: { renameId, from: "old.md", to: "new.md", queuedAt: 1 } }
+	  pendingRenames: { [renameId]: { renameId, from: "old.md", to: "new.md", queuedAt: 1 } },
+	  paused: false,
+	  activities: [],
+	  conflicts: [],
+	  lastAcknowledgedRevision: 0
     };
     const client = {
-      serverInfo: async () => ({ capabilities: ["operation-id", "rename-v1"] }),
+      serverInfo: async () => finalServerInfo(),
       findOperation: async () => null,
-      status: async () => ({ latest_revision: 1, max_upload_bytes: 1024 }),
+      status: async () => ({ latest_revision: 1, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       renameFile: async (from: string, to: string, baseRevision: number, modifiedAt: number, operationId: string) => {
         expect(from).toBe("old.md");
         expect(to).toBe("new.md");
@@ -907,13 +964,18 @@ describe("SyncEngine snapshot reconciliation", () => {
       lastIntegrityScanAt: now,
       outbox: {},
       inbox: {},
-      pendingRenames: {}
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 0
     };
     let requestCount = 0;
     const client = {
-      serverInfo: async () => ({ capabilities: ["operation-id", "batch-delete-v1"] }),
+      serverInfo: async () => finalServerInfo(),
       findOperation: async () => null,
-      status: async () => ({ latest_revision: 2, max_upload_bytes: 1024 }),
+      status: async () => ({ latest_revision: 2, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
       deleteFiles: async (items: Array<{ path: string; base_revision: number; modified_at: number }>, operationId: string) => {
         requestCount += 1;
         expect(Object.hasOwn(data.outbox, operationId)).toBe(true);
@@ -998,13 +1060,43 @@ function testSettings(): PersistedData["settings"] {
     serverUrl: "https://sync.example.com",
     vaultId: "test-vault",
     deviceId: "test-device",
-    apiTokenSecretName: "token",
+    deviceName: "Test device",
+    credentialSecretName: "token",
     accessClientId: "",
     accessClientSecretName: "",
     automaticSync: false,
     syncOnStartup: false,
     syncIntervalSeconds: 300,
     syncProfile: "full",
-    excludedPatterns: []
+    excludedPatterns: [],
+    language: "zh-CN",
+    mobileMaxFileBytes: 32 * 1024 * 1024
+  };
+}
+
+function finalServerInfo(chunkSize = 4 * 1024 * 1024) {
+  return {
+    server_version: "test",
+    protocol: { version: 1 },
+    capabilities: [
+      "snapshot",
+      "idempotent-operations",
+      "whole-file",
+      "chunk-transfer",
+      "rename",
+      "batch-delete",
+      "device-ack",
+      "history",
+      "restore",
+      "scoped-credentials"
+    ],
+    database: { schema_version: 7 },
+    limits: {
+      max_file_bytes: 1024,
+      max_page_size: 1000,
+      chunk_size: chunkSize,
+      max_chunk_query: 1000,
+      chunk_concurrency: 3
+    }
   };
 }

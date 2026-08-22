@@ -1,5 +1,7 @@
 # 0.3 Beta 人工验收记录
 
+> 已归档：此清单只记录 pre-1.0 Beta 证据，不能用于 1.0。请执行[1.0 人工验收](MANUAL_ACCEPTANCE_1.0.zh-CN.md)。
+
 本文件记录专用测试 Vault 的已验证结果，不包含 Server URL、Vault ID、Device ID、Token、Cloudflare Secret、真实笔记路径或正文。同步不是备份；未完成的项目不能视为稳定版发布结论。
 
 ## 2026-08-18：Windows 与 macOS 双向基础验收

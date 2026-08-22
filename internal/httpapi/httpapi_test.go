@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -11,392 +12,374 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"obsidian-sync-tunnel/internal/store"
 )
 
-const testToken = "0123456789abcdefghijklmnopqrstuvwxyz-TEST-TOKEN"
+type testServer struct {
+	t       *testing.T
+	db      *store.Store
+	handler http.Handler
+	token   string
+	device  string
+}
 
-func TestHealthAndAuthentication(t *testing.T) {
+func TestPairingAuthenticationScopeAndRevocation(t *testing.T) {
 	t.Parallel()
-	handler := testHandler(t, 1024)
+	server := newTestServer(t, 1024, 100)
 
-	health := httptest.NewRecorder()
-	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	health := serve(server.handler, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if health.Code != http.StatusOK {
-		t.Fatalf("health status: %d", health.Code)
+		t.Fatalf("health=%d", health.Code)
 	}
-
-	unauthorized := httptest.NewRecorder()
-	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/vaults/test/status", nil))
+	unauthorized := serve(server.handler, httptest.NewRequest(http.MethodGet, "/api/v1/vaults/test/status", nil))
 	if unauthorized.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthorized status: %d", unauthorized.Code)
+		t.Fatalf("unauthorized=%d", unauthorized.Code)
+	}
+
+	info := serve(server.handler, server.request(http.MethodGet, "/api/v1/server-info", nil))
+	if info.Code != http.StatusOK || !bytes.Contains(info.Body.Bytes(), []byte(`"version":1`)) || !bytes.Contains(info.Body.Bytes(), []byte("scoped-credentials")) {
+		t.Fatalf("server info=%d body=%s", info.Code, info.Body)
+	}
+	wrongVault := serve(server.handler, server.request(http.MethodGet, "/api/v1/vaults/other/status", nil))
+	if wrongVault.Code != http.StatusForbidden {
+		t.Fatalf("cross-vault=%d body=%s", wrongVault.Code, wrongVault.Body)
+	}
+
+	readCode, _, err := server.db.CreatePairingCode(context.Background(), "test", time.Minute, "sync:read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readOnly := pairThroughAPI(t, server.handler, "test", readCode, "reader")
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/vaults/test/files/content?path=denied.md", bytes.NewReader([]byte("x")))
+	request.Header.Set("Authorization", "Bearer "+readOnly.Token)
+	request.Header.Set("X-Base-Revision", "0")
+	request.Header.Set("X-Modified-At", "1")
+	request.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
+	request.Header.Set("X-Content-SHA256", store.Hash([]byte("x")))
+	denied := serve(server.handler, request)
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("read-only write=%d body=%s", denied.Code, denied.Body)
+	}
+
+	if err := server.db.SetDeviceStatus(context.Background(), "test", server.device, "revoked"); err != nil {
+		t.Fatal(err)
+	}
+	revoked := serve(server.handler, server.request(http.MethodGet, "/api/v1/vaults/test/status", nil))
+	if revoked.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked=%d body=%s", revoked.Code, revoked.Body)
 	}
 }
 
-func TestUploadDownloadDeleteAndConflict(t *testing.T) {
+func TestWholeFileOperationsSnapshotAckHistoryAndRestore(t *testing.T) {
 	t.Parallel()
-	handler := testHandler(t, 1024)
-	path := "folder/note.md"
-	firstData := []byte("first")
-	first := mutate(t, handler, http.MethodPut, path, 0, firstData, store.Hash(firstData))
-	if first.Change.Revision <= 0 || !first.Changed {
-		t.Fatalf("unexpected first mutation: %+v", first)
-	}
+	server := newTestServer(t, 1024, 1000)
+	first := server.mutate(http.MethodPut, "folder/note.md", 0, []byte("first"), "11111111-1111-4111-8111-111111111111")
+	second := server.mutate(http.MethodPut, "folder/note.md", first.Change.Revision, []byte("second"), "22222222-2222-4222-8222-222222222222")
 
-	changesRequest := authorizedRequest(http.MethodGet, "/api/v1/vaults/test/changes?after=0&limit=10", nil)
-	changesResponse := httptest.NewRecorder()
-	handler.ServeHTTP(changesResponse, changesRequest)
-	if changesResponse.Code != http.StatusOK {
-		t.Fatalf("changes status: %d body=%s", changesResponse.Code, changesResponse.Body)
-	}
-	var page struct {
-		Changes []store.Change `json:"changes"`
-		Cursor  int64          `json:"cursor"`
-	}
-	decodeJSON(t, changesResponse.Body.Bytes(), &page)
-	if len(page.Changes) != 1 || page.Cursor != first.Change.Revision {
-		t.Fatalf("unexpected changes: %+v", page)
-	}
-
-	blobRequest := authorizedRequest(http.MethodGet, "/api/v1/vaults/test/blobs/"+first.Change.BlobHash, nil)
-	blobResponse := httptest.NewRecorder()
-	handler.ServeHTTP(blobResponse, blobRequest)
-	if blobResponse.Code != http.StatusOK || !bytes.Equal(blobResponse.Body.Bytes(), firstData) {
-		t.Fatalf("blob status=%d body=%q", blobResponse.Code, blobResponse.Body.Bytes())
-	}
-
-	conflictData := []byte("conflict")
-	conflictRequest := fileRequest(http.MethodPut, path, 0, conflictData)
-	conflictRequest.Header.Set("X-Content-SHA256", store.Hash(conflictData))
-	conflictResponse := httptest.NewRecorder()
-	handler.ServeHTTP(conflictResponse, conflictRequest)
-	if conflictResponse.Code != http.StatusConflict {
-		t.Fatalf("conflict status=%d body=%s", conflictResponse.Code, conflictResponse.Body)
-	}
-
-	deleted := mutate(t, handler, http.MethodDelete, path, first.Change.Revision, nil, "")
-	if !deleted.Changed || !deleted.Change.Deleted {
-		t.Fatalf("unexpected delete: %+v", deleted)
-	}
-}
-
-func TestUploadValidationAndLimit(t *testing.T) {
-	t.Parallel()
-	handler := testHandler(t, 4)
-
-	tooLarge := fileRequest(http.MethodPut, "large.bin", 0, []byte("12345"))
-	tooLarge.Header.Set("X-Content-SHA256", store.Hash([]byte("12345")))
-	tooLargeResponse := httptest.NewRecorder()
-	handler.ServeHTTP(tooLargeResponse, tooLarge)
-	if tooLargeResponse.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("large upload status=%d body=%s", tooLargeResponse.Code, tooLargeResponse.Body)
-	}
-
-	badHash := fileRequest(http.MethodPut, "note.md", 0, []byte("data"))
-	badHash.Header.Set("X-Content-SHA256", store.Hash([]byte("other")))
-	badHashResponse := httptest.NewRecorder()
-	handler.ServeHTTP(badHashResponse, badHash)
-	if badHashResponse.Code != http.StatusBadRequest {
-		t.Fatalf("hash status=%d body=%s", badHashResponse.Code, badHashResponse.Body)
-	}
-}
-
-func TestOperationIDRetryReturnsOriginalRevision(t *testing.T) {
-	t.Parallel()
-	handler := testHandler(t, 1024)
-	path := "note.md"
-	firstData := []byte("first")
-	firstRequest := fileRequest(http.MethodPut, path, 0, firstData)
-	firstRequest.Header.Set("X-Content-SHA256", store.Hash(firstData))
-	firstRequest.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
-	firstResponse := httptest.NewRecorder()
-	handler.ServeHTTP(firstResponse, firstRequest)
-	if firstResponse.Code != http.StatusOK {
-		t.Fatalf("first operation status=%d body=%s", firstResponse.Code, firstResponse.Body)
-	}
-	var first mutationPayload
-	decodeJSON(t, firstResponse.Body.Bytes(), &first)
-	queryRequest := authorizedRequest(http.MethodGet, "/api/v2/vaults/test/operations/11111111-1111-4111-8111-111111111111", nil)
-	queryRequest.Header.Set("X-Device-ID", "test-device")
-	queryResponse := httptest.NewRecorder()
-	handler.ServeHTTP(queryResponse, queryRequest)
-	if queryResponse.Code != http.StatusOK {
-		t.Fatalf("operation query status=%d body=%s", queryResponse.Code, queryResponse.Body)
-	}
-	var queried mutationPayload
-	decodeJSON(t, queryResponse.Body.Bytes(), &queried)
-	if queried.Change.Revision != first.Change.Revision || !queried.Changed {
-		t.Fatalf("unexpected queried operation: %+v", queried)
-	}
-
-	secondData := []byte("second")
-	secondRequest := fileRequest(http.MethodPut, path, first.Change.Revision, secondData)
-	secondRequest.Header.Set("X-Content-SHA256", store.Hash(secondData))
-	secondRequest.Header.Set("X-Operation-ID", "22222222-2222-4222-8222-222222222222")
-	secondResponse := httptest.NewRecorder()
-	handler.ServeHTTP(secondResponse, secondRequest)
-	if secondResponse.Code != http.StatusOK {
-		t.Fatalf("second operation status=%d body=%s", secondResponse.Code, secondResponse.Body)
-	}
-
-	retryRequest := fileRequest(http.MethodPut, path, 0, firstData)
-	retryRequest.Header.Set("X-Content-SHA256", store.Hash(firstData))
-	retryRequest.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
-	retryResponse := httptest.NewRecorder()
-	handler.ServeHTTP(retryResponse, retryRequest)
-	if retryResponse.Code != http.StatusOK {
-		t.Fatalf("retry status=%d body=%s", retryResponse.Code, retryResponse.Body)
-	}
+	retryRequest := server.mutationRequest(http.MethodPut, "folder/note.md", 0, []byte("first"), "11111111-1111-4111-8111-111111111111")
+	retry := serve(server.handler, retryRequest)
 	var retried mutationPayload
-	decodeJSON(t, retryResponse.Body.Bytes(), &retried)
-	if retried.Change.Revision != first.Change.Revision || !retried.Changed {
-		t.Fatalf("retry did not return original result: first=%+v retried=%+v", first, retried)
+	decodeJSON(t, retry.Body.Bytes(), &retried)
+	if retry.Code != http.StatusOK || retried.Change.Revision != first.Change.Revision {
+		t.Fatalf("retry=%d %+v", retry.Code, retried)
 	}
 
-	reusedRequest := fileRequest(http.MethodPut, path, 0, firstData)
-	reusedRequest.Header.Set("X-Content-SHA256", store.Hash(firstData))
-	reusedRequest.Header.Set("X-Modified-At", "9999")
-	reusedRequest.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
-	reusedResponse := httptest.NewRecorder()
-	handler.ServeHTTP(reusedResponse, reusedRequest)
-	if reusedResponse.Code != http.StatusBadRequest || !bytes.Contains(reusedResponse.Body.Bytes(), []byte("operation_id_reused")) {
-		t.Fatalf("reuse status=%d body=%s", reusedResponse.Code, reusedResponse.Body)
+	operation := serve(server.handler, server.request(http.MethodGet, "/api/v1/vaults/test/operations/11111111-1111-4111-8111-111111111111", nil))
+	if operation.Code != http.StatusOK {
+		t.Fatalf("operation=%d %s", operation.Code, operation.Body)
 	}
-	missingRequest := authorizedRequest(http.MethodGet, "/api/v2/vaults/test/operations/33333333-3333-4333-8333-333333333333", nil)
-	missingRequest.Header.Set("X-Device-ID", "test-device")
-	missingResponse := httptest.NewRecorder()
-	handler.ServeHTTP(missingResponse, missingRequest)
-	if missingResponse.Code != http.StatusNotFound {
-		t.Fatalf("missing operation status=%d body=%s", missingResponse.Code, missingResponse.Body)
+	snapshot := serve(server.handler, server.request(http.MethodGet, "/api/v1/vaults/test/snapshot?at="+strconv.FormatInt(first.Change.Revision, 10)+"&limit=10", nil))
+	if snapshot.Code != http.StatusOK || !bytes.Contains(snapshot.Body.Bytes(), []byte(first.Change.BlobHash)) {
+		t.Fatalf("snapshot=%d %s", snapshot.Code, snapshot.Body)
+	}
+
+	history := serve(server.handler, server.request(http.MethodGet, "/api/v1/vaults/test/history?path=folder%2Fnote.md&limit=10", nil))
+	if history.Code != http.StatusOK {
+		t.Fatalf("history=%d %s", history.Code, history.Body)
+	}
+	var historyPage store.HistoryPage
+	decodeJSON(t, history.Body.Bytes(), &historyPage)
+	if len(historyPage.Versions) != 2 || historyPage.Versions[0].Revision != second.Change.Revision {
+		t.Fatalf("history=%+v", historyPage)
+	}
+
+	restoreBody, _ := json.Marshal(map[string]any{"path": "folder/note.md", "source_revision": first.Change.Revision})
+	restoreRequest := server.request(http.MethodPost, "/api/v1/vaults/test/restore", bytes.NewReader(restoreBody))
+	setMutationHeaders(restoreRequest, second.Change.Revision, "33333333-3333-4333-8333-333333333333", "")
+	restored := serve(server.handler, restoreRequest)
+	if restored.Code != http.StatusOK {
+		t.Fatalf("restore=%d %s", restored.Code, restored.Body)
+	}
+	var restoredPayload mutationPayload
+	decodeJSON(t, restored.Body.Bytes(), &restoredPayload)
+	if restoredPayload.Change.RestoredFromRevision != first.Change.Revision || restoredPayload.Change.BlobHash != first.Change.BlobHash {
+		t.Fatalf("restored=%+v", restoredPayload)
+	}
+
+	ackBody, _ := json.Marshal(map[string]int64{"revision": restoredPayload.Change.Revision})
+	ack := serve(server.handler, server.request(http.MethodPost, "/api/v1/vaults/test/ack", bytes.NewReader(ackBody)))
+	if ack.Code != http.StatusNoContent {
+		t.Fatalf("ack=%d %s", ack.Code, ack.Body)
+	}
+	devices, err := server.db.ListDevices(context.Background(), "test")
+	if err != nil || devices[0].LastAckRevision != restoredPayload.Change.Revision {
+		t.Fatalf("devices=%+v err=%v", devices, err)
 	}
 }
 
-func TestServerInfoAndStableSnapshot(t *testing.T) {
+func TestDeletedFileRestoreUsesLastRetainedContent(t *testing.T) {
 	t.Parallel()
-	handler := testHandler(t, 1024)
-
-	infoResponse := httptest.NewRecorder()
-	handler.ServeHTTP(infoResponse, authorizedRequest(http.MethodGet, "/api/v2/server-info", nil))
-	if infoResponse.Code != http.StatusOK {
-		t.Fatalf("server info status=%d body=%s", infoResponse.Code, infoResponse.Body)
-	}
-	var info struct {
-		ServerVersion string   `json:"server_version"`
-		Capabilities  []string `json:"capabilities"`
-		Protocol      struct {
-			Min int `json:"min"`
-			Max int `json:"max"`
-		} `json:"protocol"`
-	}
-	decodeJSON(t, infoResponse.Body.Bytes(), &info)
-	if info.ServerVersion != "test" || info.Protocol.Min != 1 || info.Protocol.Max != 2 || len(info.Capabilities) == 0 {
-		t.Fatalf("unexpected server info: %+v", info)
-	}
-
-	a1Data := []byte("a1")
-	a1 := mutate(t, handler, http.MethodPut, "a.md", 0, a1Data, store.Hash(a1Data))
-	bData := []byte("b")
-	b := mutate(t, handler, http.MethodPut, "b.md", 0, bData, store.Hash(bData))
-	a2Data := []byte("a2")
-	_ = mutate(t, handler, http.MethodPut, "a.md", a1.Change.Revision, a2Data, store.Hash(a2Data))
-
-	firstTarget := "/api/v2/vaults/test/snapshot?at=" + strconv.FormatInt(b.Change.Revision, 10) + "&limit=1"
-	firstResponse := httptest.NewRecorder()
-	handler.ServeHTTP(firstResponse, authorizedRequest(http.MethodGet, firstTarget, nil))
-	if firstResponse.Code != http.StatusOK {
-		t.Fatalf("first snapshot status=%d body=%s", firstResponse.Code, firstResponse.Body)
-	}
-	var firstPage struct {
-		Files            []store.Change `json:"files"`
-		SnapshotRevision int64          `json:"snapshot_revision"`
-		Cursor           string         `json:"cursor"`
-		HasMore          bool           `json:"has_more"`
-	}
-	decodeJSON(t, firstResponse.Body.Bytes(), &firstPage)
-	if len(firstPage.Files) != 1 || firstPage.Files[0].BlobHash != store.Hash(a1Data) || !firstPage.HasMore {
-		t.Fatalf("unexpected first snapshot page: %+v", firstPage)
-	}
-
-	secondTarget := firstTarget + "&after=" + url.QueryEscape(firstPage.Cursor)
-	secondResponse := httptest.NewRecorder()
-	handler.ServeHTTP(secondResponse, authorizedRequest(http.MethodGet, secondTarget, nil))
-	if secondResponse.Code != http.StatusOK {
-		t.Fatalf("second snapshot status=%d body=%s", secondResponse.Code, secondResponse.Body)
-	}
-	var secondPage struct {
-		Files   []store.Change `json:"files"`
-		HasMore bool           `json:"has_more"`
-	}
-	decodeJSON(t, secondResponse.Body.Bytes(), &secondPage)
-	if len(secondPage.Files) != 1 || secondPage.Files[0].Path != "b.md" || secondPage.HasMore {
-		t.Fatalf("unexpected second snapshot page: %+v", secondPage)
+	server := newTestServer(t, 1024, 1000)
+	created := server.mutate(http.MethodPut, "deleted.md", 0, []byte("recover me"), "11111111-1111-4111-8111-111111111111")
+	deleted := server.mutate(http.MethodDelete, "deleted.md", created.Change.Revision, nil, "22222222-2222-4222-8222-222222222222")
+	body, _ := json.Marshal(map[string]any{"path": "deleted.md", "source_revision": deleted.Change.Revision})
+	request := server.request(http.MethodPost, "/api/v1/vaults/test/restore", bytes.NewReader(body))
+	setMutationHeaders(request, deleted.Change.Revision, "33333333-3333-4333-8333-333333333333", "")
+	response := serve(server.handler, request)
+	var result mutationPayload
+	decodeJSON(t, response.Body.Bytes(), &result)
+	if response.Code != http.StatusOK || result.Change.Deleted || result.Change.RestoredFromRevision != created.Change.Revision || result.Change.BlobHash != created.Change.BlobHash {
+		t.Fatalf("deleted restore=%d %+v body=%s", response.Code, result, response.Body)
 	}
 }
 
-func TestChunkUploadManifestCommitAndWholeFileCompatibility(t *testing.T) {
+func TestChunkCommitDownloadIsolationRenameAndBatchDelete(t *testing.T) {
 	t.Parallel()
-	handler := testHandler(t, 1024)
+	server := newTestServer(t, 1024, 1000)
 	data := []byte("chunk content")
 	hash := store.Hash(data)
-
-	missingBody, _ := json.Marshal(map[string]any{"hashes": []string{hash}})
-	missingResponse := httptest.NewRecorder()
-	handler.ServeHTTP(missingResponse, authorizedRequest(http.MethodPost, "/api/v2/vaults/test/chunks/missing", bytes.NewReader(missingBody)))
-	if missingResponse.Code != http.StatusOK || !bytes.Contains(missingResponse.Body.Bytes(), []byte(hash)) {
-		t.Fatalf("missing chunks status=%d body=%s", missingResponse.Code, missingResponse.Body)
+	putChunk := serve(server.handler, server.request(http.MethodPut, "/api/v1/vaults/test/chunks/"+hash, bytes.NewReader(data)))
+	if putChunk.Code != http.StatusOK {
+		t.Fatalf("put chunk=%d %s", putChunk.Code, putChunk.Body)
 	}
-
-	chunkResponse := httptest.NewRecorder()
-	handler.ServeHTTP(chunkResponse, authorizedRequest(http.MethodPut, "/api/v2/vaults/test/chunks/"+hash, bytes.NewReader(data)))
-	if chunkResponse.Code != http.StatusOK {
-		t.Fatalf("put chunk status=%d body=%s", chunkResponse.Code, chunkResponse.Body)
-	}
-
-	missingResponse = httptest.NewRecorder()
-	handler.ServeHTTP(missingResponse, authorizedRequest(http.MethodPost, "/api/v2/vaults/test/chunks/missing", bytes.NewReader(missingBody)))
-	if missingResponse.Code != http.StatusOK || bytes.Contains(missingResponse.Body.Bytes(), []byte(hash)) {
-		t.Fatalf("missing chunks after upload status=%d body=%s", missingResponse.Code, missingResponse.Body)
-	}
-
-	manifestBody, _ := json.Marshal(map[string]any{
-		"size":   len(data),
-		"chunks": []store.ChunkRef{{Hash: hash, Size: int64(len(data))}},
-	})
-	commitRequest := authorizedRequest(http.MethodPost, "/api/v2/vaults/test/files/commit?path=note.md", bytes.NewReader(manifestBody))
-	commitRequest.Header.Set("X-Device-ID", "test-device")
-	commitRequest.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
-	commitRequest.Header.Set("X-Base-Revision", "0")
-	commitRequest.Header.Set("X-Modified-At", "1234")
-	commitRequest.Header.Set("X-Content-SHA256", hash)
-	commitResponse := httptest.NewRecorder()
-	handler.ServeHTTP(commitResponse, commitRequest)
+	manifestBody, _ := json.Marshal(map[string]any{"size": len(data), "chunks": []store.ChunkRef{{Hash: hash, Size: int64(len(data))}}})
+	commit := server.request(http.MethodPost, "/api/v1/vaults/test/files/commit?path=old.md", bytes.NewReader(manifestBody))
+	setMutationHeaders(commit, 0, "11111111-1111-4111-8111-111111111111", hash)
+	commitResponse := serve(server.handler, commit)
+	var committed mutationPayload
+	decodeJSON(t, commitResponse.Body.Bytes(), &committed)
 	if commitResponse.Code != http.StatusOK {
-		t.Fatalf("commit manifest status=%d body=%s", commitResponse.Code, commitResponse.Body)
+		t.Fatalf("commit=%d %s", commitResponse.Code, commitResponse.Body)
+	}
+	download := serve(server.handler, server.request(http.MethodGet, "/api/v1/vaults/test/chunks/"+hash, nil))
+	if download.Code != http.StatusOK || !bytes.Equal(download.Body.Bytes(), data) {
+		t.Fatalf("download=%d", download.Code)
 	}
 
-	chunkDownload := httptest.NewRecorder()
-	handler.ServeHTTP(chunkDownload, authorizedRequest(http.MethodGet, "/api/v2/vaults/test/chunks/"+hash, nil))
-	if chunkDownload.Code != http.StatusOK || !bytes.Equal(chunkDownload.Body.Bytes(), data) {
-		t.Fatalf("get chunk status=%d body=%q", chunkDownload.Code, chunkDownload.Body.Bytes())
+	if _, err := server.db.CreateVault(context.Background(), "other", "Other", 0, 0); err != nil {
+		t.Fatal(err)
 	}
-	wholeDownload := httptest.NewRecorder()
-	handler.ServeHTTP(wholeDownload, authorizedRequest(http.MethodGet, "/api/v1/vaults/test/blobs/"+hash, nil))
-	if wholeDownload.Code != http.StatusOK || !bytes.Equal(wholeDownload.Body.Bytes(), data) {
-		t.Fatalf("whole-file compatibility status=%d body=%q", wholeDownload.Code, wholeDownload.Body.Bytes())
-	}
-	manifestResponse := httptest.NewRecorder()
-	handler.ServeHTTP(manifestResponse, authorizedRequest(http.MethodGet, "/api/v2/vaults/test/manifests/"+hash, nil))
-	if manifestResponse.Code != http.StatusOK || !bytes.Contains(manifestResponse.Body.Bytes(), []byte(hash)) {
-		t.Fatalf("get manifest status=%d body=%s", manifestResponse.Code, manifestResponse.Body)
-	}
-}
-
-func TestRenameEndpoint(t *testing.T) {
-	t.Parallel()
-	handler := testHandler(t, 1024)
-	data := []byte("rename")
-	source := mutate(t, handler, http.MethodPut, "old.md", 0, data, store.Hash(data))
-	body, _ := json.Marshal(map[string]string{"from": "old.md", "to": "new.md"})
-	request := authorizedRequest(http.MethodPost, "/api/v2/vaults/test/rename", bytes.NewReader(body))
-	request.Header.Set("X-Device-ID", "test-device")
-	request.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
-	request.Header.Set("X-Base-Revision", strconv.FormatInt(source.Change.Revision, 10))
-	request.Header.Set("X-Modified-At", "1234")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("rename status=%d body=%s", response.Code, response.Body)
-	}
-	var result struct {
-		Change         store.Change   `json:"change"`
-		RelatedChanges []store.Change `json:"related_changes"`
-		Changed        bool           `json:"changed"`
-	}
-	decodeJSON(t, response.Body.Bytes(), &result)
-	if !result.Changed || result.Change.Path != "new.md" || len(result.RelatedChanges) != 1 || !result.RelatedChanges[0].Deleted {
-		t.Fatalf("unexpected rename result: %+v", result)
+	otherCode, _, _ := server.db.CreatePairingCode(context.Background(), "other", time.Minute, store.DefaultDeviceScopes)
+	other := pairThroughAPI(t, server.handler, "other", otherCode, "other")
+	otherRequest := httptest.NewRequest(http.MethodGet, "/api/v1/vaults/other/chunks/"+hash, nil)
+	otherRequest.Header.Set("Authorization", "Bearer "+other.Token)
+	isolated := serve(server.handler, otherRequest)
+	if isolated.Code != http.StatusNotFound {
+		t.Fatalf("cross-vault chunk=%d %s", isolated.Code, isolated.Body)
 	}
 
-	operationRequest := authorizedRequest(http.MethodGet, "/api/v2/vaults/test/operations/11111111-1111-4111-8111-111111111111", nil)
-	operationRequest.Header.Set("X-Device-ID", "test-device")
-	operationResponse := httptest.NewRecorder()
-	handler.ServeHTTP(operationResponse, operationRequest)
-	if operationResponse.Code != http.StatusOK || !bytes.Contains(operationResponse.Body.Bytes(), []byte("related_changes")) {
-		t.Fatalf("rename operation status=%d body=%s", operationResponse.Code, operationResponse.Body)
+	renameBody, _ := json.Marshal(map[string]string{"from": "old.md", "to": "new.md"})
+	rename := server.request(http.MethodPost, "/api/v1/vaults/test/rename", bytes.NewReader(renameBody))
+	setMutationHeaders(rename, committed.Change.Revision, "22222222-2222-4222-8222-222222222222", "")
+	renameResponse := serve(server.handler, rename)
+	if renameResponse.Code != http.StatusOK {
+		t.Fatalf("rename=%d %s", renameResponse.Code, renameResponse.Body)
 	}
-}
+	var renamed struct {
+		Change store.Change `json:"change"`
+	}
+	decodeJSON(t, renameResponse.Body.Bytes(), &renamed)
 
-func TestBatchDeleteEndpoint(t *testing.T) {
-	t.Parallel()
-	handler := testHandler(t, 1024)
-	a := mutate(t, handler, http.MethodPut, "a.md", 0, []byte("a"), store.Hash([]byte("a")))
-	b := mutate(t, handler, http.MethodPut, "b.md", 0, []byte("b"), store.Hash([]byte("b")))
-	body, _ := json.Marshal(map[string]any{"items": []store.BatchDeleteItem{
-		{Path: "a.md", BaseRevision: a.Change.Revision, ModifiedAt: 2},
-		{Path: "b.md", BaseRevision: b.Change.Revision, ModifiedAt: 2},
+	second := server.mutate(http.MethodPut, "second.md", 0, []byte("two"), "33333333-3333-4333-8333-333333333333")
+	batchBody, _ := json.Marshal(map[string]any{"items": []store.BatchDeleteItem{
+		{Path: "new.md", BaseRevision: renamed.Change.Revision, ModifiedAt: 2},
+		{Path: "second.md", BaseRevision: second.Change.Revision, ModifiedAt: 2},
 	}})
-	request := authorizedRequest(http.MethodPost, "/api/v2/vaults/test/batch/delete", bytes.NewReader(body))
-	request.Header.Set("X-Device-ID", "test-device")
-	request.Header.Set("X-Operation-ID", "11111111-1111-4111-8111-111111111111")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("batch delete status=%d body=%s", response.Code, response.Body)
-	}
-	var result struct {
-		Changes []store.Change `json:"changes"`
-		Changed bool           `json:"changed"`
-	}
-	decodeJSON(t, response.Body.Bytes(), &result)
-	if !result.Changed || len(result.Changes) != 2 || !result.Changes[0].Deleted || !result.Changes[1].Deleted {
-		t.Fatalf("unexpected batch result: %+v", result)
+	batch := server.request(http.MethodPost, "/api/v1/vaults/test/batch/delete", bytes.NewReader(batchBody))
+	batch.Header.Set("X-Operation-ID", "44444444-4444-4444-8444-444444444444")
+	batchResponse := serve(server.handler, batch)
+	if batchResponse.Code != http.StatusOK {
+		t.Fatalf("batch=%d %s", batchResponse.Code, batchResponse.Body)
 	}
 }
 
-type mutationPayload struct {
-	Change  store.Change `json:"change"`
-	Changed bool         `json:"changed"`
-}
-
-func mutate(t *testing.T, handler http.Handler, method, path string, baseRevision int64, data []byte, hash string) mutationPayload {
-	t.Helper()
-	request := fileRequest(method, path, baseRevision, data)
-	if hash != "" {
-		request.Header.Set("X-Content-SHA256", hash)
+func TestLimitsRateAndAdminAPI(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, 4, 2)
+	large := serve(server.handler, server.mutationRequest(http.MethodPut, "large.bin", 0, []byte("12345"), "11111111-1111-4111-8111-111111111111"))
+	if large.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("large=%d %s", large.Code, large.Body)
 	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("mutation status=%d body=%s", response.Code, response.Body)
+	_ = serve(server.handler, server.request(http.MethodGet, "/api/v1/server-info", nil))
+	rateLimited := serve(server.handler, server.request(http.MethodGet, "/api/v1/server-info", nil))
+	if rateLimited.Code != http.StatusTooManyRequests || rateLimited.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate=%d %s", rateLimited.Code, rateLimited.Body)
 	}
-	var payload mutationPayload
-	decodeJSON(t, response.Body.Bytes(), &payload)
-	return payload
+
+	admin := NewAdmin(server.db, "0123456789abcdefghijklmnopqrstuvwxyz-ADMIN", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	unauthorized := serve(admin, httptest.NewRequest(http.MethodGet, "/admin/v1/vaults", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("admin unauthorized=%d", unauthorized.Code)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/admin/v1/stats", nil)
+	request.Header.Set("Authorization", "Bearer 0123456789abcdefghijklmnopqrstuvwxyz-ADMIN")
+	stats := serve(admin, request)
+	if stats.Code != http.StatusOK || !bytes.Contains(stats.Body.Bytes(), []byte(`"vaults":1`)) {
+		t.Fatalf("stats=%d %s", stats.Code, stats.Body)
+	}
 }
 
-func fileRequest(method, path string, baseRevision int64, data []byte) *http.Request {
-	request := authorizedRequest(method, "/api/v1/vaults/test/file?path="+url.QueryEscape(path), bytes.NewReader(data))
-	request.Header.Set("X-Device-ID", "test-device")
-	request.Header.Set("X-Base-Revision", strconv.FormatInt(baseRevision, 10))
-	request.Header.Set("X-Modified-At", "1234")
-	return request
+func TestAdminVaultAndDeviceLifecycle(t *testing.T) {
+	t.Parallel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "sync.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	const adminToken = "0123456789abcdefghijklmnopqrstuvwxyz-ADMIN"
+	admin := NewAdmin(db, adminToken, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	adminRequest := func(method, target string, body any) *http.Request {
+		var reader io.Reader
+		if body != nil {
+			encoded, encodeErr := json.Marshal(body)
+			if encodeErr != nil {
+				t.Fatal(encodeErr)
+			}
+			reader = bytes.NewReader(encoded)
+		}
+		request := httptest.NewRequest(method, target, reader)
+		request.Header.Set("Authorization", "Bearer "+adminToken)
+		return request
+	}
+
+	created := serve(admin, adminRequest(http.MethodPost, "/admin/v1/vaults", map[string]any{
+		"id": "managed", "display_name": "Managed", "quota_bytes": 2048, "max_files": 10,
+	}))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create=%d %s", created.Code, created.Body)
+	}
+	suspended := serve(admin, adminRequest(http.MethodPut, "/admin/v1/vaults/managed", map[string]any{
+		"display_name": "Managed", "status": "suspended", "quota_bytes": 2048, "max_files": 10,
+	}))
+	if suspended.Code != http.StatusOK || !bytes.Contains(suspended.Body.Bytes(), []byte(`"status":"suspended"`)) {
+		t.Fatalf("suspend=%d %s", suspended.Code, suspended.Body)
+	}
+	active := serve(admin, adminRequest(http.MethodPut, "/admin/v1/vaults/managed", map[string]any{
+		"display_name": "Managed", "status": "active", "quota_bytes": 4096, "max_files": 20,
+	}))
+	if active.Code != http.StatusOK {
+		t.Fatalf("activate=%d %s", active.Code, active.Body)
+	}
+	pairing := serve(admin, adminRequest(http.MethodPost, "/admin/v1/vaults/managed/pairing-codes", map[string]any{
+		"ttl_seconds": 60, "scopes": store.DefaultDeviceScopes,
+	}))
+	var pairingResult struct {
+		Code string `json:"code"`
+	}
+	decodeJSON(t, pairing.Body.Bytes(), &pairingResult)
+	if pairing.Code != http.StatusCreated || pairingResult.Code == "" {
+		t.Fatalf("pairing=%d %s", pairing.Code, pairing.Body)
+	}
+
+	public := New(db, Options{MaxFileBytes: 1024, RequestsPerMinute: 1000, BytesPerMinute: 1024 * 1024, Version: "test"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	paired := pairThroughAPI(t, public, "managed", pairingResult.Code, "Managed device")
+	devices := serve(admin, adminRequest(http.MethodGet, "/admin/v1/vaults/managed/devices", nil))
+	if devices.Code != http.StatusOK || !bytes.Contains(devices.Body.Bytes(), []byte(paired.Device.ID)) {
+		t.Fatalf("devices=%d %s", devices.Code, devices.Body)
+	}
+	revoked := serve(admin, adminRequest(http.MethodPost, "/admin/v1/vaults/managed/devices/"+paired.Device.ID+"/status", map[string]string{"status": "revoked"}))
+	if revoked.Code != http.StatusNoContent {
+		t.Fatalf("revoke=%d %s", revoked.Code, revoked.Body)
+	}
+	if _, err := db.AuthenticateToken(context.Background(), paired.Token, "managed", "sync:read"); err == nil {
+		t.Fatal("revoked admin-managed device still authenticated")
+	}
+	audit := serve(admin, adminRequest(http.MethodGet, "/admin/v1/audit?limit=100", nil))
+	if audit.Code != http.StatusOK || !bytes.Contains(audit.Body.Bytes(), []byte("device.revoked")) {
+		t.Fatalf("audit=%d %s", audit.Code, audit.Body)
+	}
 }
 
-func authorizedRequest(method, target string, body io.Reader) *http.Request {
-	request := httptest.NewRequest(method, target, body)
-	request.Header.Set("Authorization", "Bearer "+testToken)
-	return request
-}
-
-func testHandler(t *testing.T, maxUpload int64) http.Handler {
+func newTestServer(t *testing.T, maxFile int64, requestsPerMinute int) *testServer {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "sync.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return New(db, testToken, maxUpload, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := db.CreateVault(context.Background(), "test", "Test", 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	db.ConfigureLimits(store.ResourceLimits{MaxFileBytes: maxFile})
+	handler := New(db, Options{MaxFileBytes: maxFile, RequestsPerMinute: requestsPerMinute, BytesPerMinute: 1024 * 1024, Version: "test"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	code, _, err := db.CreatePairingCode(context.Background(), "test", time.Minute, store.DefaultDeviceScopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paired := pairThroughAPI(t, handler, "test", code, "test-device")
+	return &testServer{t: t, db: db, handler: handler, token: paired.Token, device: paired.Device.ID}
+}
+
+func pairThroughAPI(t *testing.T, handler http.Handler, vault, code, name string) store.PairResult {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"vault_id": vault, "code": code, "device_name": name, "platform": "test", "client_version": "1.0.0"})
+	response := serve(handler, httptest.NewRequest(http.MethodPost, "/api/v1/pair", bytes.NewReader(body)))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("pair=%d %s", response.Code, response.Body)
+	}
+	var result store.PairResult
+	decodeJSON(t, response.Body.Bytes(), &result)
+	return result
+}
+
+func (s *testServer) request(method, target string, body io.Reader) *http.Request {
+	request := httptest.NewRequest(method, target, body)
+	request.Header.Set("Authorization", "Bearer "+s.token)
+	return request
+}
+
+func (s *testServer) mutationRequest(method, path string, baseRevision int64, data []byte, operationID string) *http.Request {
+	target := "/api/v1/vaults/test/files/content?path=" + url.QueryEscape(path)
+	request := s.request(method, target, bytes.NewReader(data))
+	hash := ""
+	if method == http.MethodPut {
+		hash = store.Hash(data)
+	}
+	setMutationHeaders(request, baseRevision, operationID, hash)
+	return request
+}
+
+func (s *testServer) mutate(method, path string, baseRevision int64, data []byte, operationID string) mutationPayload {
+	s.t.Helper()
+	response := serve(s.handler, s.mutationRequest(method, path, baseRevision, data, operationID))
+	if response.Code != http.StatusOK {
+		s.t.Fatalf("mutation=%d body=%s", response.Code, response.Body)
+	}
+	var payload mutationPayload
+	decodeJSON(s.t, response.Body.Bytes(), &payload)
+	return payload
+}
+
+func setMutationHeaders(request *http.Request, baseRevision int64, operationID, hash string) {
+	request.Header.Set("X-Base-Revision", strconv.FormatInt(baseRevision, 10))
+	request.Header.Set("X-Modified-At", "1234")
+	request.Header.Set("X-Operation-ID", operationID)
+	if hash != "" {
+		request.Header.Set("X-Content-SHA256", hash)
+	}
+}
+
+func serve(handler http.Handler, request *http.Request) *httptest.ResponseRecorder {
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+type mutationPayload struct {
+	Change  store.Change `json:"change"`
+	Changed bool         `json:"changed"`
 }
 
 func decodeJSON(t *testing.T, data []byte, target any) {

@@ -1,8 +1,15 @@
 {
   "listen": "127.0.0.1:8787",
+	"admin_listen": "127.0.0.1:8788",
   "database_path": "data/sync.db",
-  "token_file": "token.txt",
+	"admin_token_file": "admin-token.txt",
   "log_path": "logs/server.jsonl",
-  "max_upload_bytes": 67108864,
-  "allow_non_loopback": false
+	"max_file_bytes": 67108864,
+	"default_vault_quota_bytes": 0,
+	"default_vault_max_files": 0,
+	"min_free_bytes": 536870912,
+	"rate_requests_per_minute": 600,
+	"rate_bytes_per_minute": 536870912,
+	"allow_non_loopback": false,
+	"allow_admin_non_loopback": false
 }

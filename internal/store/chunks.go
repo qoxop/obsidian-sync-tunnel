@@ -55,6 +55,9 @@ func (s *Store) MissingChunks(ctx context.Context, hashes []string) ([]string, e
 }
 
 func (s *Store) PutChunk(ctx context.Context, expectedHash string, data []byte) (bool, error) {
+	if err := s.checkDiskSpace(int64(len(data))); err != nil {
+		return false, err
+	}
 	hash, err := normalizeSHA256(expectedHash)
 	if err != nil {
 		return false, err
@@ -131,6 +134,30 @@ func (s *Store) GetChunk(ctx context.Context, expectedHash string) ([]byte, erro
 		return nil, errors.New("stored chunk failed SHA-256 verification")
 	}
 	return data, nil
+}
+
+func (s *Store) GetChunkForVault(ctx context.Context, vaultID, expectedHash string) ([]byte, error) {
+	if err := ValidateID("vault ID", vaultID); err != nil {
+		return nil, err
+	}
+	hash, err := normalizeSHA256(expectedHash)
+	if err != nil {
+		return nil, sql.ErrNoRows
+	}
+	var allowed bool
+	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM changes c
+		JOIN manifests m ON m.content_hash=c.blob_hash
+		JOIN json_each(m.chunks_json) part
+		WHERE c.vault_id=? AND json_extract(part.value, '$.hash')=?
+	)`, vaultID, hash).Scan(&allowed)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
+		return nil, sql.ErrNoRows
+	}
+	return s.GetChunk(ctx, hash)
 }
 
 func (s *Store) GetManifest(ctx context.Context, vaultID, contentHash string) (int64, []ChunkRef, error) {

@@ -9,10 +9,10 @@ import (
 )
 
 func (a *API) batchDelete(w http.ResponseWriter, r *http.Request) {
-	deviceID := r.Header.Get("X-Device-ID")
+	deviceID := requestPrincipal(r).DeviceID
 	operationID := r.Header.Get("X-Operation-ID")
 	if deviceID == "" {
-		writeError(w, http.StatusBadRequest, "missing_device", "X-Device-ID is required")
+		writeError(w, http.StatusUnauthorized, "unpaired_device", "paired device credential required")
 		return
 	}
 	if operationID == "" {

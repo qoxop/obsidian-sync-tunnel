@@ -1,22 +1,18 @@
-# macOS 第二设备脚本化验收
+# macOS 第二设备 1.0 验收
 
-本流程用于把一台 Mac 作为设备 B，连接到现有测试 Vault，并验证 `0.3.0-beta.3` 的首次下载、反向上传、大文件分块、路径兼容和持久化队列收敛。它只适用于专用测试 Vault，不能替代备份。
+本流程把 Mac 作为设备 B 接入已经由 Windows 设备 A 初始化的逻辑测试 Vault，验证 `1.0.0-rc.1` 的配对、首次下载、反向上传、分块、路径和重启恢复。只用于专用测试 Vault。
 
-脚本直接从 GitHub Release 下载 `main.js`、`manifest.json` 和 `styles.css`，因此不依赖 BRAT。后续可以继续用同一脚本指定新版本，或者在验收完成后改由 BRAT 管理更新。
+## 准备
 
-## 1. Mac 上的准备
+1. Mac 创建全新的空 Obsidian Vault，至少打开一次产生 `.obsidian`；
+2. Windows 管理端为同一逻辑 Vault 创建新的、尚未使用的一次性配对码；
+3. 准备 Cloudflare HTTPS URL；若启用 Access，准备 Client ID/Secret；
+4. 不复制设备 A 的插件目录、`data.json`、Device ID 或任何凭据；
+5. 配对码和 Access Secret 不发送到聊天或写入普通笔记。
 
-1. 安装 Obsidian，并创建一个全新的空 Vault；
-2. 至少打开这个 Vault 一次，确认其中已经产生 `.obsidian` 目录；
-3. 记录 Vault 的绝对路径；
-4. 在密码管理器中准备现有 API Token。不要把 Token、Cloudflare Secret、真实域名或 Vault 正文发到聊天、截图或终端命令中；
-5. 如果 Cloudflare Access 已启用，同时准备 Client ID 和保存在密码管理器中的 Client Secret。
+## 下载脚本和 RC
 
-第二台设备已有笔记时不要直接运行引导流程。先完整备份，另建空 Vault 完成验收，再人工迁移只存在于旧 Vault 的文件。
-
-## 2. 下载并执行引导脚本
-
-推荐先下载成文件，检查后再执行：
+RC Release 发布后执行：
 
 ```bash
 curl --fail --location --proto '=https' --tlsv1.2 \
@@ -24,104 +20,76 @@ curl --fail --location --proto '=https' --tlsv1.2 \
   --output "$HOME/Downloads/macos-device-test.sh"
 chmod 700 "$HOME/Downloads/macos-device-test.sh"
 less "$HOME/Downloads/macos-device-test.sh"
-"$HOME/Downloads/macos-device-test.sh" guided --vault "$HOME/Documents/Obsidian/SyncTunnelMacTest"
+
+VAULT="$HOME/Documents/Obsidian/SyncTunnelMacTest"
+SCRIPT="$HOME/Downloads/macos-device-test.sh"
+"$SCRIPT" guided --vault "$VAULT" --version 1.0.0-rc.1
 ```
 
-`guided` 会执行下列操作：
+脚本从 GitHub Release 下载并校验 `main.js`、`manifest.json`、`styles.css`；更新已有插件前备份整个插件目录，但不读取/复制 SecretStorage。它不会修改 `community-plugins.json`，因此首次安装后需要手动启用 Sync Tunnel。
 
-- 拒绝非空 Vault，避免把测试意外指向真实笔记；
-- 通过 HTTPS 下载并校验固定版本 `0.3.0-beta.3` 的插件 ID、版本和必要附件；
-- 更新已有插件前，把整个插件目录备份到 `~/Documents/ObsidianSyncBackups/client-state/`；
-- 不复制设备 A 的 `data.json`，不读取或保存 API Token/Cloudflare Secret；
-- 暂停并等待用户在 Obsidian 中完成 SecretStorage、首次同步预览和同步方向确认；
-- 检查客户端游标、已跟踪文件和持久化队列；
-- 生成 Markdown、Canvas、PNG、Unicode/空格路径、嵌套路径和 5 MiB 二进制探针；
-- 在第二次同步后检查本地 SHA-256、服务端确认 revision 和 `.DS_Store` 排除规则。
+## Obsidian 中的操作
 
-脚本不会修改 `community-plugins.json`，所以首次安装后需要在 **Settings > Community plugins** 中手动启用 **Sync Tunnel**。
+脚本暂停后：
 
-## 3. Obsidian 中只需要做的操作
+1. 重载 Obsidian并启用 Sync Tunnel；
+2. 打开配置向导；
+3. Server URL 填 Cloudflare 地址，Vault ID 填设备 A 的逻辑 Vault ID；
+4. Device name 使用可识别名称，Device ID 由服务器配对后返回；
+5. 输入这台 Mac 独立的一次性配对码；
+6. 若启用 Access，Client Secret 只进入 SecretStorage；
+7. 选择 Recommended，首次模式选择安全合并；
+8. 暂时关闭自动同步，连接测试必须显示协议 1/版本 `1.0.0-rc.1`；
+9. 点击同步两次，第二次所有计数为 0，再回终端按回车。
 
-脚本第一次暂停后：
+脚本检查最终 schema、设备身份、Credential 引用、cursor、ACK、文件索引和所有持久化队列。它不输出 URL、Vault/Device ID 或 Secret。
 
-1. 重载或重新打开 Obsidian，在空测试 Vault 中启用 **Sync Tunnel**；
-2. Server URL 填设备 A 使用的地址；
-3. Vault ID 填设备 A 使用的同一值；
-4. 保留 Mac 自动生成的唯一 Device ID，不复制设备 A 的插件目录或 `data.json`；
-5. 在 SecretStorage 中新建或选择 API Token 条目并粘贴 Token；
-6. 如已启用 Cloudflare Access，填写 Client ID，并把 Client Secret 放进另一个 SecretStorage 条目；
-7. 暂时关闭 **Automatic sync**；
-8. 点击 **Test connection**，确认服务端为 `0.3.0-beta.1`；
-9. 打开 **First sync preview**，选择 **Recommended safe**；
-10. 点击两次 **Sync now**，确认第二次上传、下载、删除和冲突均为 0，然后回到终端按回车。
-
-脚本第二次暂停前已经生成探针。再次点击两次 **Sync now**，确认第二次全 0，再回到终端按回车。最终出现以下内容才算设备 B 通过：
+之后脚本创建 Markdown、Canvas、PNG、Unicode/空格路径、嵌套路径、5 MiB 二进制和应被排除的 `.DS_Store`。在 Mac 再同步两次，第二次全 0后回车。通过标志：
 
 ```text
 [INFO] macOS device-B verification PASS
 ```
 
-安全报告位于：
-
-```text
-<Vault>/.obsidian/plugins/sync-tunnel/macos-verification-report.txt
-```
-
-报告不包含 Server URL、Vault ID、Device ID、Token、Cloudflare Secret 或笔记正文。
-
-## 4. 可重复运行的子命令
-
-如果引导流程中断，不需要重新安装：
-
-```bash
-SCRIPT="$HOME/Downloads/macos-device-test.sh"
-VAULT="$HOME/Documents/Obsidian/SyncTunnelMacTest"
-
-"$SCRIPT" status --vault "$VAULT"
-"$SCRIPT" create-probe --vault "$VAULT"
-"$SCRIPT" verify-probe --vault "$VAULT"
-```
-
-重新下载或更新指定候选版：
-
-```bash
-"$SCRIPT" prepare --vault "$VAULT" --version 0.3.0-beta.3
-```
-
-默认不允许非空 Vault。`--allow-non-empty` 仅供已经完成备份并明确知道风险的维护者使用，不应用于首次验收。
-
-## 5. 退出并重开 Obsidian 的恢复测试
-
-只在专用测试 Vault 中执行。开始前保存所有正在编辑的笔记，并保持 **Automatic sync** 关闭：
+## 中断续传
 
 ```bash
 "$SCRIPT" create-resume-probe --vault "$VAULT" --probe-size-mib 64
 ```
 
-然后在 Obsidian 中点击一次 **Sync now**，确认上传仍在进行时按 `Command-Q` 退出。Obsidian 完全关闭后先不要重开，执行：
+点击 Sync now，在上传仍进行时 `Command-Q`。Obsidian 完全退出后：
 
 ```bash
 "$SCRIPT" check-resume-interrupted --vault "$VAULT"
 ```
 
-只有出现 `CLIENT_RESTART_INTERRUPTED_STATE_PASS` 才继续。若上传已经在退出前完成，脚本会要求创建新探针并更早退出；这不算功能失败。
-
-重新打开同一 Vault，点击 **Sync now** 等待恢复完成，再点击一次并确认全部计数为 `0`。最后执行：
+只有 `CLIENT_RESTART_INTERRUPTED_STATE_PASS` 才继续。重开 Vault，同步完成后再点一次确认全 0：
 
 ```bash
 "$SCRIPT" verify-resume-probe --vault "$VAULT"
 ```
 
-通过标志为 `CLIENT_RESTART_RESUME_PASS`。脚本同时验证本地大小、SHA-256、已确认 revision 和所有持久化队列，不会输出连接地址、设备标识或密钥。
+通过标志为 `CLIENT_RESTART_RESUME_PASS`。
 
-## 6. 通过标准
+## 可重复子命令
 
-Mac 端脚本通过后，还需要让设备 A 手动同步两次，并检查：
+```bash
+"$SCRIPT" status --vault "$VAULT" --version 1.0.0-rc.1
+"$SCRIPT" create-probe --vault "$VAULT"
+"$SCRIPT" verify-probe --vault "$VAULT" --version 1.0.0-rc.1
+"$SCRIPT" prepare --vault "$VAULT" --version 1.0.0-rc.1
+```
 
-- 能收到 `_sync-tunnel-verification/mac-device-b-*` 目录；
-- `SHA256SUMS` 中列出的文件在设备 A 上校验一致；
-- 5 MiB 文件完整下载；
-- `.DS_Store` 没有出现在设备 A；
-- 第二次同步所有计数为 0。
+默认拒绝非空 Vault。`--allow-non-empty` 只供已经完整备份且明确接受风险的维护者。
 
-把 Mac 终端最后的 PASS/FAIL 输出发回即可，不要附带 `data.json`。设备 A 的同步和哈希检查可以继续由 Codex 在 Windows 上完成。
+## 设备 A 反向检查
+
+Mac PASS 后让 Windows A 手动同步两次：
+
+- 收到 `_sync-tunnel-verification/mac-device-b-*`；
+- `SHA256SUMS` 所列文件一致；
+- 5/64 MiB 文件完整；
+- `.DS_Store` 未跟踪；
+- 第二次全 0；
+- 管理端设备列表中 Mac ACK revision 不落后于其 cursor。
+
+只发送终端 PASS/FAIL 和脱敏计数，不发送 `data.json`。

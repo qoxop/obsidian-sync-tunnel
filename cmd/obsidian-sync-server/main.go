@@ -35,7 +35,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: obsidian-sync-server <serve|token|healthcheck|version>")
+		return errors.New("usage: obsidian-sync-server <serve|token|healthcheck|backup|verify-backup|restore-backup|doctor|version>")
 	}
 	switch args[0] {
 	case "serve":
@@ -47,9 +47,92 @@ func run(args []string) error {
 		return nil
 	case "healthcheck":
 		return healthcheck(args[1:])
+	case "backup":
+		return backupCommand(args[1:])
+	case "verify-backup":
+		return verifyBackupCommand(args[1:])
+	case "restore-backup":
+		return restoreBackupCommand(args[1:])
+	case "doctor":
+		return doctorCommand(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func backupCommand(args []string) error {
+	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+	database := fs.String("database", "data/sync.db", "SQLite database path")
+	destination := fs.String("destination", "", "empty backup destination directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *destination == "" {
+		return errors.New("--destination is required")
+	}
+	db, err := store.Open(*database)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	manifest, err := db.Backup(context.Background(), *destination)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(manifest)
+}
+
+func verifyBackupCommand(args []string) error {
+	fs := flag.NewFlagSet("verify-backup", flag.ContinueOnError)
+	directory := fs.String("directory", "", "backup directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *directory == "" {
+		return errors.New("--directory is required")
+	}
+	manifest, err := store.VerifyBackup(*directory)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(manifest)
+}
+
+func restoreBackupCommand(args []string) error {
+	fs := flag.NewFlagSet("restore-backup", flag.ContinueOnError)
+	source := fs.String("source", "", "verified backup directory")
+	target := fs.String("target", "", "empty restore target directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *source == "" || *target == "" {
+		return errors.New("--source and --target are required")
+	}
+	return store.RestoreBackup(*source, *target)
+}
+
+func doctorCommand(args []string) error {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	database := fs.String("database", "data/sync.db", "SQLite database path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	db, err := store.Open(*database)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	report, err := db.Doctor(context.Background())
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		return err
+	}
+	if !report.OK {
+		return errors.New("doctor found integrity problems")
+	}
+	return nil
 }
 
 func healthcheck(args []string) error {
@@ -111,11 +194,18 @@ func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", configPath, "path to a JSON configuration file")
 	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "HTTP listen address")
+	fs.StringVar(&cfg.AdminListen, "admin-listen", cfg.AdminListen, "loopback-only admin HTTP listen address")
 	fs.StringVar(&cfg.DatabasePath, "database", cfg.DatabasePath, "SQLite database path")
-	fs.StringVar(&cfg.TokenFile, "token-file", cfg.TokenFile, "file containing the bearer token")
+	fs.StringVar(&cfg.AdminTokenFile, "admin-token-file", cfg.AdminTokenFile, "file containing the local admin bearer token")
 	fs.StringVar(&cfg.LogPath, "log", cfg.LogPath, "optional append-only JSON log path")
-	fs.Int64Var(&cfg.MaxUploadBytes, "max-upload-bytes", cfg.MaxUploadBytes, "maximum bytes per file")
+	fs.Int64Var(&cfg.MaxFileBytes, "max-file-bytes", cfg.MaxFileBytes, "maximum bytes per file")
+	fs.Int64Var(&cfg.DefaultVaultQuotaBytes, "default-vault-quota-bytes", cfg.DefaultVaultQuotaBytes, "default logical byte quota per vault; zero disables")
+	fs.Int64Var(&cfg.DefaultVaultMaxFiles, "default-vault-max-files", cfg.DefaultVaultMaxFiles, "default file count quota per vault; zero disables")
+	fs.Int64Var(&cfg.MinFreeBytes, "min-free-bytes", cfg.MinFreeBytes, "minimum server disk free-space reserve")
+	fs.IntVar(&cfg.RateRequestsPerMinute, "rate-requests-per-minute", cfg.RateRequestsPerMinute, "per-device request limit")
+	fs.Int64Var(&cfg.RateBytesPerMinute, "rate-bytes-per-minute", cfg.RateBytesPerMinute, "per-device uploaded byte limit")
 	fs.BoolVar(&cfg.AllowNonLoopback, "allow-non-loopback", cfg.AllowNonLoopback, "allow binding beyond loopback (for an isolated container network)")
+	fs.BoolVar(&cfg.AllowAdminNonLoopback, "allow-admin-non-loopback", cfg.AllowAdminNonLoopback, "allow admin binding inside an isolated container; host publication must remain loopback-only")
 	windowsService := fs.Bool("windows-service", false, "run under the Windows Service Control Manager")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -124,7 +214,7 @@ func serve(args []string) error {
 		return err
 	}
 
-	token, err := cfg.ResolveToken()
+	adminToken, err := cfg.ResolveAdminToken()
 	if err != nil {
 		return err
 	}
@@ -134,6 +224,12 @@ func serve(args []string) error {
 		return err
 	}
 	defer db.Close()
+	db.ConfigureLimits(store.ResourceLimits{
+		MaxFileBytes:      cfg.MaxFileBytes,
+		DefaultQuotaBytes: cfg.DefaultVaultQuotaBytes,
+		DefaultMaxFiles:   cfg.DefaultVaultMaxFiles,
+		MinFreeBytes:      cfg.MinFreeBytes,
+	})
 
 	logOutput := io.Writer(os.Stdout)
 	var logFile *os.File
@@ -155,42 +251,67 @@ func serve(args []string) error {
 	logger := slog.New(slog.NewJSONHandler(logOutput, nil))
 	if *windowsService {
 		return winservice.Run("ObsidianSyncTunnel", func(ctx context.Context) error {
-			return runHTTPServer(ctx, cfg, db, token, logger)
+			return runHTTPServer(ctx, cfg, db, adminToken, logger)
 		})
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return runHTTPServer(ctx, cfg, db, token, logger)
+	return runHTTPServer(ctx, cfg, db, adminToken, logger)
 }
 
-func runHTTPServer(ctx context.Context, cfg config.Config, db *store.Store, token string, logger *slog.Logger) error {
-	handler := httpapi.New(db, token, cfg.MaxUploadBytes, version, logger)
-	server := &http.Server{
+func runHTTPServer(ctx context.Context, cfg config.Config, db *store.Store, adminToken string, logger *slog.Logger) error {
+	handler := httpapi.New(db, httpapi.Options{
+		MaxFileBytes:      cfg.MaxFileBytes,
+		RequestsPerMinute: cfg.RateRequestsPerMinute,
+		BytesPerMinute:    cfg.RateBytesPerMinute,
+		Version:           version,
+	}, logger)
+	publicServer := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       90 * time.Second,
 		WriteTimeout:      5 * time.Minute,
 	}
+	adminServer := &http.Server{
+		Addr:              cfg.AdminListen,
+		Handler:           httpapi.NewAdmin(db, adminToken, logger),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		WriteTimeout:      30 * time.Minute,
+	}
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		logger.Info("sync server listening", "address", cfg.Listen, "database", cfg.DatabasePath, "version", version)
-		errCh <- server.ListenAndServe()
+		errCh <- publicServer.ListenAndServe()
+	}()
+	go func() {
+		logger.Info("admin server listening", "address", cfg.AdminListen)
+		errCh <- adminServer.ListenAndServe()
 	}()
 
+	var serveErr error
 	select {
 	case err := <-errCh:
 		if !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("serve: %w", err)
+			serveErr = fmt.Errorf("serve: %w", err)
 		}
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("shutdown: %w", err)
-		}
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	publicErr := publicServer.Shutdown(shutdownCtx)
+	adminErr := adminServer.Shutdown(shutdownCtx)
+	if serveErr != nil {
+		return serveErr
+	}
+	if publicErr != nil {
+		return fmt.Errorf("shutdown public server: %w", publicErr)
+	}
+	if adminErr != nil {
+		return fmt.Errorf("shutdown admin server: %w", adminErr)
 	}
 	return nil
 }

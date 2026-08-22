@@ -2,11 +2,11 @@ name: obsidian-sync-tunnel
 
 services:
   sync-server:
-    image: obsidian-sync-tunnel:${OBSIDIAN_SYNC_VERSION:-0.2.0}
+    image: obsidian-sync-tunnel:${OBSIDIAN_SYNC_VERSION:-1.0.0-rc.1}
     build:
       context: .
       args:
-        VERSION: ${OBSIDIAN_SYNC_VERSION:-0.2.0}
+        VERSION: ${OBSIDIAN_SYNC_VERSION:-1.0.0-rc.1}
     container_name: obsidian-sync-server
     restart: unless-stopped
     init: true
@@ -22,31 +22,51 @@ services:
         host_ip: 127.0.0.1
         protocol: tcp
         app_protocol: http
+      - name: admin-http
+        target: 8788
+        published: "${OBSIDIAN_SYNC_ADMIN_PORT:-8788}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+        app_protocol: http
     command:
       - serve
       - --listen
       - 0.0.0.0:8787
       - --allow-non-loopback
+      - --admin-listen
+      - 0.0.0.0:8788
+      - --allow-admin-non-loopback
       - --database
       - /data/sync.db
-      - --token-file
-      - /run/secrets/sync_api_token
+      - --admin-token-file
+      - /run/secrets/sync_admin_token
       - --log
       - /data/server.jsonl
-      - --max-upload-bytes
-      - "${OBSIDIAN_SYNC_MAX_UPLOAD_BYTES:-67108864}"
+      - --max-file-bytes
+      - "${OBSIDIAN_SYNC_MAX_FILE_BYTES:-67108864}"
+      - --min-free-bytes
+      - "${OBSIDIAN_SYNC_MIN_FREE_BYTES:-536870912}"
+      - --rate-requests-per-minute
+      - "${OBSIDIAN_SYNC_RATE_REQUESTS_PER_MINUTE:-600}"
+      - --rate-bytes-per-minute
+      - "${OBSIDIAN_SYNC_RATE_BYTES_PER_MINUTE:-536870912}"
     volumes:
       - type: bind
         source: ${OBSIDIAN_SYNC_DATA_DIR:-./runtime-data}
         target: /data
         bind:
           create_host_path: false
+      - type: bind
+        source: ${OBSIDIAN_SYNC_BACKUP_DIR:-./runtime-backups}
+        target: /backups
+        bind:
+          create_host_path: false
     secrets:
-      - sync_api_token
+      - sync_admin_token
     tmpfs:
       - /tmp:size=16m,mode=1777
     stop_grace_period: 20s
 
 secrets:
-  sync_api_token:
-    file: ${OBSIDIAN_SYNC_TOKEN_FILE:-./secrets/api-token.txt}
+  sync_admin_token:
+    file: ${OBSIDIAN_SYNC_ADMIN_TOKEN_FILE:-./secrets/admin-token.txt}

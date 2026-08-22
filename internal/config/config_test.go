@@ -25,3 +25,36 @@ func TestValidateRequiresLoopback(t *testing.T) {
 		t.Fatalf("container listener should be valid with explicit opt-in: %v", err)
 	}
 }
+
+func TestAdminListenerRequiresIndependentLoopbackOrContainerOptIn(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	cfg.AdminListen = "0.0.0.0:8788"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("non-loopback admin listener was accepted")
+	}
+	cfg.AllowAdminNonLoopback = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("container admin listener: %v", err)
+	}
+	cfg.Listen = cfg.AdminListen
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("shared public/admin listener was accepted")
+	}
+}
+
+func TestResourceLimitValidation(t *testing.T) {
+	t.Parallel()
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.MinFreeBytes = -1 },
+		func(cfg *Config) { cfg.DefaultVaultQuotaBytes = -1 },
+		func(cfg *Config) { cfg.RateRequestsPerMinute = 0 },
+		func(cfg *Config) { cfg.RateBytesPerMinute = 0 },
+	} {
+		cfg := Default()
+		mutate(&cfg)
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("invalid resource limit was accepted")
+		}
+	}
+}

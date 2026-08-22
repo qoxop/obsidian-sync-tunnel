@@ -28,7 +28,7 @@ COPY --from=builder --chown=65532:65532 /out/obsidian-sync-server /app/obsidian-
 COPY --from=builder --chown=65532:65532 /out/data /data
 
 USER 65532:65532
-EXPOSE 8787
+EXPOSE 8787 8788
 VOLUME ["/data"]
 STOPSIGNAL SIGTERM
 
@@ -36,4 +36,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/app/obsidian-sync-server", "healthcheck", "--url", "http://127.0.0.1:8787/healthz", "--timeout", "3s"]
 
 ENTRYPOINT ["/app/obsidian-sync-server"]
-CMD ["serve", "--listen", "0.0.0.0:8787", "--allow-non-loopback", "--database", "/data/sync.db", "--token-file", "/run/secrets/sync_api_token", "--log", "/data/server.jsonl"]
+CMD ["serve", "--listen", "0.0.0.0:8787", "--allow-non-loopback", "--admin-listen", "0.0.0.0:8788", "--allow-admin-non-loopback", "--database", "/data/sync.db", "--admin-token-file", "/run/secrets/sync_admin_token", "--log", "/data/server.jsonl"]

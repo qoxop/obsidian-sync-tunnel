@@ -1,14 +1,16 @@
 [CmdletBinding()]
 param(
     [string]$DataDirectory = "",
-    [string]$TokenFile = "",
+    [string]$AdminTokenFile = "",
+	[string]$BackupDirectory = "",
     [ValidateRange(1, 65535)]
     [int]$HostPort = 8787,
+	[ValidateRange(1, 65535)]
+	[int]$AdminHostPort = 8788,
     [ValidateRange(1024, [int64]::MaxValue)]
-    [int64]$MaxUploadBytes = 67108864,
-    [string]$Version = "0.2.0",
-    [switch]$ForceConfig,
-    [switch]$HideGeneratedToken
+    [int64]$MaxFileBytes = 67108864,
+    [string]$Version = "1.0.0-rc.1",
+	[switch]$ForceConfig
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,14 +37,16 @@ if ((Test-Path -LiteralPath $envPath -PathType Leaf) -and -not $ForceConfig) {
 }
 
 if (-not $DataDirectory) { $DataDirectory = Join-Path $repoRoot "runtime-data" }
-if (-not $TokenFile) { $TokenFile = Join-Path $repoRoot "secrets\api-token.txt" }
+if (-not $AdminTokenFile) { $AdminTokenFile = Join-Path $repoRoot "secrets\admin-token.txt" }
+if (-not $BackupDirectory) { $BackupDirectory = Join-Path $repoRoot "runtime-backups" }
 $DataDirectory = [System.IO.Path]::GetFullPath($DataDirectory)
-$TokenFile = [System.IO.Path]::GetFullPath($TokenFile)
-$tokenDirectory = Split-Path -Parent $TokenFile
-New-Item -ItemType Directory -Path $DataDirectory, $tokenDirectory -Force | Out-Null
+$AdminTokenFile = [System.IO.Path]::GetFullPath($AdminTokenFile)
+$BackupDirectory = [System.IO.Path]::GetFullPath($BackupDirectory)
+$tokenDirectory = Split-Path -Parent $AdminTokenFile
+New-Item -ItemType Directory -Path $DataDirectory, $BackupDirectory, $tokenDirectory -Force | Out-Null
 
 $generatedToken = $false
-if (-not (Test-Path -LiteralPath $TokenFile -PathType Leaf)) {
+if (-not (Test-Path -LiteralPath $AdminTokenFile -PathType Leaf)) {
     $bytes = [byte[]]::new(32)
     $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
     try {
@@ -51,18 +55,21 @@ if (-not (Test-Path -LiteralPath $TokenFile -PathType Leaf)) {
         $generator.Dispose()
     }
     $token = [Convert]::ToBase64String($bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
-    [System.IO.File]::WriteAllText($TokenFile, $token, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($AdminTokenFile, $token, [System.Text.UTF8Encoding]::new($false))
     $generatedToken = $true
 }
 
 $dataForCompose = $DataDirectory.Replace("\", "/")
-$tokenForCompose = $TokenFile.Replace("\", "/")
+$tokenForCompose = $AdminTokenFile.Replace("\", "/")
+$backupForCompose = $BackupDirectory.Replace("\", "/")
 $lines = @(
     "OBSIDIAN_SYNC_VERSION=$Version",
     "OBSIDIAN_SYNC_PORT=$HostPort",
-    "OBSIDIAN_SYNC_MAX_UPLOAD_BYTES=$MaxUploadBytes",
+	"OBSIDIAN_SYNC_ADMIN_PORT=$AdminHostPort",
+    "OBSIDIAN_SYNC_MAX_FILE_BYTES=$MaxFileBytes",
     "OBSIDIAN_SYNC_DATA_DIR=`"$dataForCompose`"",
-    "OBSIDIAN_SYNC_TOKEN_FILE=`"$tokenForCompose`""
+	"OBSIDIAN_SYNC_BACKUP_DIR=`"$backupForCompose`"",
+    "OBSIDIAN_SYNC_ADMIN_TOKEN_FILE=`"$tokenForCompose`""
 )
 [System.IO.File]::WriteAllText($envPath, (($lines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
 
@@ -77,15 +84,11 @@ try {
 Write-Host "Docker deployment initialized"
 Write-Host "  Environment: $envPath"
 Write-Host "  Persistent data: $DataDirectory"
-Write-Host "  API token file: $TokenFile"
+Write-Host "  Admin token file: $AdminTokenFile"
 Write-Host "  Local endpoint: http://127.0.0.1:$HostPort"
+Write-Host "  Local admin endpoint: http://127.0.0.1:$AdminHostPort"
 if ($generatedToken) {
-    if ($HideGeneratedToken) {
-        Write-Warning "A new API token was generated but hidden from this output. Read it locally from the API token file when configuring Obsidian."
-    } else {
-        Write-Warning "Save this API token in a password manager and Obsidian SecretStorage. It will not be displayed automatically again:"
-        Write-Host $token
-    }
+	Write-Warning "A new local Admin Token was generated and stored in the protected token file. It is not printed and is never entered into Obsidian."
 } else {
-    Write-Host "Existing API token retained."
+    Write-Host "Existing admin token retained."
 }

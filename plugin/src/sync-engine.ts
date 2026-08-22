@@ -3,7 +3,7 @@ import { DataAdapter, FileSystemAdapter, Platform, Vault } from "obsidian";
 import { ApiError, SyncApiClient } from "./api-client";
 import { sha256 } from "./hash";
 import { conflictPath, pathRequiresObsidianRestart } from "./path";
-import { BatchDeleteItem, BatchMutationResponse, Change, ChunkRef, FileState, InboxDownload, InitialSyncMode, LocalFile, MutationResponse, OutboxOperation, PersistedData, SyncSummary } from "./types";
+import { BatchDeleteItem, BatchMutationResponse, Change, ChunkRef, FileState, InboxDownload, InitialSyncMode, LocalFile, MutationResponse, OutboxOperation, PersistedData, SyncProgress, SyncSummary } from "./types";
 import { VaultScanner } from "./vault-scanner";
 
 const FULL_SCAN_INTERVAL_MS = 60 * 60 * 1000;
@@ -24,11 +24,6 @@ function requireDesktopModule<T>(moduleId: string): T {
 
 export class SyncEngine {
   private running = false;
-  private supportsOperationIDs = false;
-  private supportsChunkUpload = false;
-  private supportsChunkDownload = false;
-  private supportsRename = false;
-  private supportsBatchDelete = false;
   private chunkSize = 4 * 1024 * 1024;
   private chunkConcurrency = 3;
   private maxChunkQuery = 1000;
@@ -40,7 +35,9 @@ export class SyncEngine {
     private readonly data: PersistedData,
     private readonly client: SyncApiClient,
     private readonly scanner: VaultScanner,
-    private readonly persist: () => Promise<void>
+	private readonly persist: () => Promise<void>,
+	private readonly onProgress: (progress: SyncProgress) => void = () => undefined,
+	private readonly shouldPause: () => boolean = () => false
   ) {
     this.adapter = vault.adapter;
   }
@@ -56,37 +53,30 @@ export class SyncEngine {
       conflicts: 0,
       skipped: 0,
       restartRequired: false,
+	  restartPaths: [],
       renamed: 0
     };
     try {
+	  this.checkpoint("applying");
       const initialMode = this.data.initialSyncCompleted ? null : this.data.pendingInitialSyncMode;
       if (!this.data.initialSyncCompleted && !initialMode) throw new Error("Initial sync requires explicit confirmation");
       await this.resumeInbox(summary);
       const serverInfo = await this.client.serverInfo();
-      this.supportsOperationIDs = serverInfo.capabilities.includes("operation-id");
-      this.supportsChunkUpload = this.supportsOperationIDs && serverInfo.capabilities.includes("chunk-upload-v1");
-      this.supportsChunkDownload = serverInfo.capabilities.includes("chunk-download-v1");
-      this.supportsRename = this.supportsOperationIDs && serverInfo.capabilities.includes("rename-v1");
-      this.supportsBatchDelete = this.supportsOperationIDs && serverInfo.capabilities.includes("batch-delete-v1");
+	  const required = ["snapshot", "idempotent-operations", "chunk-transfer", "rename", "batch-delete", "device-ack"];
+	  if (serverInfo.protocol.version !== 1 || required.some((capability) => !serverInfo.capabilities.includes(capability))) {
+		throw new Error("服务端不是 Sync Tunnel 1.0 协议，客户端与服务端必须同时升级");
+	  }
       this.chunkSize = positiveInteger(serverInfo.limits?.chunk_size, this.chunkSize);
       this.chunkConcurrency = Math.min(8, positiveInteger(serverInfo.limits?.chunk_concurrency, this.chunkConcurrency));
       this.maxChunkQuery = Math.min(1000, positiveInteger(serverInfo.limits?.max_chunk_query, this.maxChunkQuery));
-      if (!this.supportsOperationIDs && Object.keys(this.data.outbox).length > 0) {
-        throw new Error("服务器不支持 operation-id，无法安全恢复尚未确认的写入；请先重新升级服务端");
-      }
-      if (this.supportsOperationIDs) await this.resumeOutbox(summary);
+	  await this.resumeOutbox(summary);
       const status = await this.client.status();
       const filterFingerprint = this.scanner.filterFingerprint();
       const filterChanged = this.data.filterFingerprint !== filterFingerprint;
       if (filterChanged || initialMode) {
         await this.reconcileSnapshot(filterFingerprint, summary, initialMode);
       }
-      if (this.supportsRename) {
-        await this.processPendingRenames(summary);
-      } else if (Object.keys(this.data.pendingRenames).length > 0) {
-        this.data.pendingRenames = {};
-        await this.persist();
-      }
+	  await this.processPendingRenames(summary);
       const now = Date.now();
       const pendingPaths = { ...this.data.pendingPaths };
       const integrityScanDue = now - this.data.lastIntegrityScanAt >= INTEGRITY_SCAN_INTERVAL_MS;
@@ -97,7 +87,8 @@ export class SyncEngine {
         || now - this.data.lastFullScanAt >= FULL_SCAN_INTERVAL_MS
         || integrityScanDue;
       const paths = fullScan ? undefined : Object.keys(pendingPaths);
-      const localFiles = await this.scanner.scan({
+	  this.checkpoint("scanning");
+	  const localFiles = await this.scanner.scan({
         cache: this.data.scanCache,
         paths,
         // A queued adapter event is positive evidence that the file changed.
@@ -105,9 +96,12 @@ export class SyncEngine {
         forceHash: integrityScanDue || !fullScan
       });
       this.updateScanCache(localFiles, fullScan, paths ?? []);
-      await this.pushLocalChanges(
+	  const maxFileBytes = Platform.isMobile
+		? Math.min(status.max_file_bytes, this.data.settings.mobileMaxFileBytes)
+		: status.max_file_bytes;
+	  await this.pushLocalChanges(
         localFiles,
-        status.max_upload_bytes,
+		maxFileBytes,
         summary,
         fullScan ? undefined : new Set(paths)
       );
@@ -123,11 +117,23 @@ export class SyncEngine {
       if (integrityScanDue) this.data.lastIntegrityScanAt = now;
       this.acknowledgePendingPaths(pendingPaths);
       await this.persist();
+	  await this.client.acknowledge(this.data.cursor);
+	  this.data.lastAcknowledgedRevision = this.data.cursor;
+	  await this.persist();
+	  this.onProgress({ phase: "idle", completedFiles: 0, totalFiles: 0, completedBytes: 0, totalBytes: 0 });
       return summary;
     } finally {
       this.running = false;
     }
   }
+
+	private checkpoint(phase: SyncProgress["phase"]): void {
+	  if (this.shouldPause()) {
+		this.onProgress({ phase: "paused", completedFiles: 0, totalFiles: 0, completedBytes: 0, totalBytes: 0 });
+		throw new SyncPausedError();
+	  }
+	  this.onProgress({ phase, completedFiles: 0, totalFiles: 0, completedBytes: 0, totalBytes: 0 });
+	}
 
   private async reconcileSnapshot(
     filterFingerprint: string,
@@ -139,6 +145,7 @@ export class SyncEngine {
     let hasMore = true;
     const snapshot = new Map<string, Change>();
     while (hasMore) {
+	  this.checkpoint("comparing");
       const page = await this.client.listSnapshot(snapshotRevision, cursor);
       if (snapshotRevision === undefined) {
         snapshotRevision = page.snapshot_revision;
@@ -172,22 +179,26 @@ export class SyncEngine {
   private async preserveLocalOnlyFiles(remotePaths: Set<string>, summary: SyncSummary): Promise<void> {
     const localFiles = await this.scanner.scan();
     for (const path of localFiles.keys()) {
+	  this.checkpoint("applying");
       if (remotePaths.has(path)) continue;
       const content = await this.adapter.readBinary(path);
       await this.preserveConflict(path, content);
       await this.adapter.remove(path);
       summary.conflicts += 1;
-      if (pathRequiresObsidianRestart(path, this.vault.configDir)) summary.restartRequired = true;
+	  if (pathRequiresObsidianRestart(path, this.vault.configDir)) markRestart(summary, path);
     }
   }
 
   private async pushLocalChanges(
     localFiles: Map<string, LocalFile>,
-    maxUploadBytes: number,
+    maxFileBytes: number,
     summary: SyncSummary,
     deletionCandidates?: Set<string>
   ): Promise<void> {
+	let completedFiles = 0;
+	const totalFiles = localFiles.size;
     for (const [path, local] of localFiles) {
+	  this.checkpoint("uploading");
       if (this.deferredRemotePaths.has(path)) continue;
       const previous = this.data.files[path];
       if (previous && !previous.deleted && previous.hash === local.hash) {
@@ -196,42 +207,58 @@ export class SyncEngine {
         summary.skipped += 1;
         continue;
       }
-      if (local.size > maxUploadBytes) {
-        throw new Error(`${path} is ${local.size} bytes; server limit is ${maxUploadBytes} bytes`);
+      if (local.size > maxFileBytes) {
+        throw new Error(`${path} is ${local.size} bytes; server limit is ${maxFileBytes} bytes`);
       }
-      const content = await this.adapter.readBinary(path);
-      const currentHash = await sha256(content);
       const stat = await this.adapter.stat(path);
       if (!stat || stat.type !== "file") continue;
-      const chunks = this.supportsChunkUpload && content.byteLength > this.chunkSize
-        ? await this.buildChunkRefs(content)
-        : undefined;
+	  const desktopStreaming = local.size > this.chunkSize && Platform.isDesktopApp && this.adapter instanceof FileSystemAdapter;
+	  let content: ArrayBuffer | undefined;
+	  let currentHash: string;
+	  let chunks: ChunkRef[] | undefined;
+	  if (desktopStreaming) {
+		const streamed = await this.buildDesktopChunkRefs(path);
+		currentHash = streamed.hash;
+		chunks = streamed.chunks;
+	  } else {
+		content = await this.adapter.readBinary(path);
+		currentHash = await sha256(content);
+		chunks = content.byteLength > this.chunkSize ? await this.buildChunkRefs(content) : undefined;
+	  }
+	  if (stat.size !== local.size || stat.mtime !== local.modifiedAt || currentHash !== local.hash) {
+		this.queuePath(path);
+		continue;
+	  }
       const operationID = await this.stageOperation(
         "put",
         path,
         previous?.revision ?? 0,
         stat.mtime,
         currentHash,
-        content.byteLength,
+		stat.size,
         chunks
       );
       try {
-        const result = chunks && operationID
-          ? await this.uploadChunkedFile(path, previous?.revision ?? 0, stat.mtime, currentHash, content, chunks, operationID)
-          : await this.client.putFile(path, previous?.revision ?? 0, stat.mtime, currentHash, content, operationID);
+		const result = chunks && operationID
+		  ? desktopStreaming
+			? await this.uploadDesktopChunkedFile(path, previous?.revision ?? 0, stat.mtime, currentHash, stat.size, chunks, operationID)
+			: await this.uploadChunkedFile(path, previous?.revision ?? 0, stat.mtime, currentHash, content!, chunks, operationID)
+		  : await this.client.putFile(path, previous?.revision ?? 0, stat.mtime, currentHash, content!, operationID);
         this.data.files[path] = stateFromChange(result.change);
         this.data.scanCache[path] = {
           hash: currentHash,
-          size: content.byteLength,
+		  size: stat.size,
           modifiedAt: stat.mtime
         };
         await this.completeOperation(operationID);
         if (result.changed) summary.uploaded += 1;
         else summary.skipped += 1;
+		completedFiles += 1;
+		this.onProgress({ phase: "uploading", completedFiles, totalFiles, completedBytes: 0, totalBytes: 0 });
       } catch (error) {
         if (!(error instanceof ApiError) || error.code !== "revision_conflict" || !error.current) throw error;
         await this.discardOperation(operationID);
-        await this.preserveConflict(path, content);
+		await this.preserveConflict(path, content ?? await this.adapter.readBinary(path));
         summary.conflicts += 1;
         await this.applyRemoteChange(error.current, summary, false);
       }
@@ -243,7 +270,7 @@ export class SyncEngine {
       if (deletionCandidates && !deletionCandidates.has(path)) return false;
       return true;
     });
-    if (this.supportsBatchDelete && deletions.length > 1) {
+	if (deletions.length > 1) {
       const completed = await this.pushBatchDeletes(deletions, summary);
       if (completed) {
         await this.persist();
@@ -272,6 +299,7 @@ export class SyncEngine {
   private async pullRemoteChanges(summary: SyncSummary): Promise<void> {
     let hasMore = true;
     while (hasMore) {
+	  this.checkpoint("downloading");
       const page = await this.client.listChanges(this.data.cursor);
       for (const change of page.changes) {
         if (this.scanner.isExcluded(change.path)) continue;
@@ -296,7 +324,12 @@ export class SyncEngine {
         ? !previous.deleted && currentHash !== previous.hash && currentHash !== remoteHash
         : currentHash !== remoteHash;
       if (preserveConcurrentLocal && locallyModified) {
-        await this.preserveConflict(change.path, currentData);
+		const saved = await this.preserveConflict(change.path, currentData);
+		this.data.conflicts.push({
+		  id: crypto.randomUUID(), originalPath: change.path, conflictPath: saved,
+		  localRevision: previous?.revision ?? 0, remoteRevision: change.revision,
+		  localHash: currentHash, remoteHash, remoteDeviceId: change.device_id, createdAt: Date.now()
+		});
         summary.conflicts += 1;
       }
       if (!change.deleted && currentHash === remoteHash) {
@@ -310,7 +343,7 @@ export class SyncEngine {
       if (exists) {
         await this.adapter.remove(change.path);
         summary.deletedLocal += 1;
-        if (pathRequiresObsidianRestart(change.path, this.vault.configDir)) summary.restartRequired = true;
+		if (pathRequiresObsidianRestart(change.path, this.vault.configDir)) markRestart(summary, change.path);
       }
       this.data.files[change.path] = stateFromChange(change);
       delete this.data.scanCache[change.path];
@@ -318,6 +351,9 @@ export class SyncEngine {
     }
 
     if (!change.blob_hash) throw new Error(`Server change ${change.revision} has no blob hash`);
+	if (Platform.isMobile && change.size > this.data.settings.mobileMaxFileBytes) {
+	  throw new Error(`${change.path} 为 ${change.size} bytes，超过移动端安全内存限制 ${this.data.settings.mobileMaxFileBytes} bytes`);
+	}
     const download = await this.stageDownload(change);
     await this.downloadToTemporaryFile(change.blob_hash, change.size, download);
     if (!await this.fileMatches(download.tempPath, download.hash, download.size)) {
@@ -328,7 +364,7 @@ export class SyncEngine {
     await this.installDownload(download);
     await this.finishDownload(download);
     summary.downloaded += 1;
-    if (pathRequiresObsidianRestart(change.path, this.vault.configDir)) summary.restartRequired = true;
+	if (pathRequiresObsidianRestart(change.path, this.vault.configDir)) markRestart(summary, change.path);
   }
 
   private async preserveConflict(originalPath: string, content: ArrayBuffer): Promise<string> {
@@ -384,7 +420,6 @@ export class SyncEngine {
     sourcePath?: string,
     batchDeletes?: BatchDeleteItem[]
   ): Promise<string | undefined> {
-    if (!this.supportsOperationIDs) return undefined;
     const operationId = crypto.randomUUID();
     this.data.outbox[operationId] = {
       operationId,
@@ -452,38 +487,34 @@ export class SyncEngine {
           await this.abandonUncommittedOperation(operation);
           continue;
         }
-        const content = await this.adapter.readBinary(operation.path);
-        if (content.byteLength !== operation.size || await sha256(content) !== operation.hash) {
+		const desktopStreaming = operation.transport === "chunks" && Platform.isDesktopApp && this.adapter instanceof FileSystemAdapter;
+		const content = desktopStreaming ? undefined : await this.adapter.readBinary(operation.path);
+		const stat = await this.adapter.stat(operation.path);
+		const actualHash = desktopStreaming ? await this.hashLocalFile(operation.path) : await sha256(content!);
+		if (!stat || stat.type !== "file" || stat.size !== operation.size || actualHash !== operation.hash) {
           await this.abandonUncommittedOperation(operation);
           continue;
         }
         try {
-          const chunks = operation.transport === "chunks"
-            ? await this.buildChunkRefs(content)
-            : undefined;
-          const result = chunks && this.supportsChunkUpload
-            ? await this.uploadChunkedFile(
+		  const chunks = operation.transport === "chunks" ? operation.chunks : undefined;
+		  if (operation.transport === "chunks" && (!chunks || chunks.length === 0)) throw new Error("Persisted chunk manifest is missing");
+		  const result = chunks
+			? desktopStreaming
+			  ? await this.uploadDesktopChunkedFile(operation.path, operation.baseRevision, operation.modifiedAt, operation.hash, operation.size, chunks, operation.operationId)
+			  : await this.uploadChunkedFile(operation.path, operation.baseRevision, operation.modifiedAt, operation.hash, content!, chunks, operation.operationId)
+			: await this.client.putFile(
               operation.path,
               operation.baseRevision,
               operation.modifiedAt,
               operation.hash,
-              content,
-              chunks,
-              operation.operationId
-            )
-            : await this.client.putFile(
-              operation.path,
-              operation.baseRevision,
-              operation.modifiedAt,
-              operation.hash,
-              content,
+			  content!,
               operation.operationId
             );
           await this.acceptRecoveredOperation(operation, result.change, result.changed, summary);
         } catch (error) {
           if (!(error instanceof ApiError) || error.code !== "revision_conflict" || !error.current) throw error;
           await this.discardOperation(operation.operationId);
-          await this.preserveConflict(operation.path, content);
+		  await this.preserveConflict(operation.path, content ?? await this.adapter.readBinary(operation.path));
           summary.conflicts += 1;
           await this.applyRemoteChange(error.current, summary, false);
         }
@@ -760,6 +791,81 @@ export class SyncEngine {
     return chunks;
   }
 
+	private async buildDesktopChunkRefs(path: string): Promise<{ hash: string; chunks: ChunkRef[] }> {
+	  const adapter = this.adapter;
+	  if (!(adapter instanceof FileSystemAdapter)) throw new Error("Desktop chunking requires a filesystem adapter");
+	  const { open } = requireDesktopModule<typeof import("node:fs/promises")>("node:fs/promises");
+	  const { createHash } = requireDesktopModule<typeof import("node:crypto")>("node:crypto");
+	  const handle = await open(adapter.getFullPath(path), "r");
+	  const chunks: ChunkRef[] = [];
+	  const contentDigest = createHash("sha256");
+	  let position = 0;
+	  try {
+		const stat = await handle.stat();
+		while (position < stat.size) {
+		  const length = Math.min(this.chunkSize, stat.size - position);
+		  const buffer = Buffer.alloc(length);
+		  const { bytesRead } = await handle.read(buffer, 0, length, position);
+		  if (bytesRead !== length) throw new Error(`Unexpected end of file while chunking ${path}`);
+		  const view = buffer.subarray(0, bytesRead);
+		  contentDigest.update(view);
+		  chunks.push({ hash: createHash("sha256").update(view).digest("hex"), size: bytesRead });
+		  position += bytesRead;
+		}
+	  } finally {
+		await handle.close();
+	  }
+	  return { hash: contentDigest.digest("hex"), chunks };
+	}
+
+	private async uploadDesktopChunkedFile(
+	  path: string,
+	  baseRevision: number,
+	  modifiedAt: number,
+	  hash: string,
+	  size: number,
+	  chunks: ChunkRef[],
+	  operationId: string
+	) {
+	  const adapter = this.adapter;
+	  if (!(adapter instanceof FileSystemAdapter)) throw new Error("Desktop chunk upload requires a filesystem adapter");
+	  const locations = new Map<string, { offset: number; size: number }>();
+	  let offset = 0;
+	  for (const chunk of chunks) {
+		if (!locations.has(chunk.hash)) locations.set(chunk.hash, { offset, size: chunk.size });
+		offset += chunk.size;
+	  }
+	  if (offset !== size) throw new Error(`Chunk manifest size mismatch for ${path}`);
+	  const hashes = [...locations.keys()];
+	  const missing: string[] = [];
+	  for (let index = 0; index < hashes.length; index += this.maxChunkQuery) {
+		missing.push(...await this.client.missingChunks(hashes.slice(index, index + this.maxChunkQuery)));
+	  }
+	  const { open } = requireDesktopModule<typeof import("node:fs/promises")>("node:fs/promises");
+	  const { createHash } = requireDesktopModule<typeof import("node:crypto")>("node:crypto");
+	  const handle = await open(adapter.getFullPath(path), "r");
+	  try {
+		let uploadedBytes = 0;
+		for (const missingHash of missing) {
+		  this.checkpoint("uploading");
+		  const location = locations.get(missingHash);
+		  if (!location) throw new Error("Server returned an unknown missing Chunk hash");
+		  const buffer = Buffer.alloc(location.size);
+		  const { bytesRead } = await handle.read(buffer, 0, location.size, location.offset);
+		  if (bytesRead !== location.size || createHash("sha256").update(buffer).digest("hex") !== missingHash) {
+			throw new Error(`Local file changed during chunk upload: ${path}`);
+		  }
+		  const data = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + bytesRead) as ArrayBuffer;
+		  await this.client.putChunk(missingHash, data);
+		  uploadedBytes += bytesRead;
+		  this.onProgress({ phase: "uploading", completedFiles: 0, totalFiles: 0, completedBytes: uploadedBytes, totalBytes: size });
+		}
+	  } finally {
+		await handle.close();
+	  }
+	  return this.client.commitManifest(path, baseRevision, modifiedAt, hash, size, chunks, operationId);
+	}
+
   private async uploadChunkedFile(
     path: string,
     baseRevision: number,
@@ -808,7 +914,7 @@ export class SyncEngine {
   }
 
   private async downloadToTemporaryFile(hash: string, expectedSize: number, download: InboxDownload): Promise<void> {
-    const manifest = this.supportsChunkDownload && expectedSize > this.chunkSize
+	const manifest = expectedSize > this.chunkSize
       ? await this.client.findManifest(hash)
       : null;
     if (manifest && Platform.isDesktopApp && this.adapter instanceof FileSystemAdapter) {
@@ -982,14 +1088,14 @@ export class SyncEngine {
         await this.cleanupDownloadArtifacts(download);
         await this.finishDownload(download);
         summary.downloaded += 1;
-        if (pathRequiresObsidianRestart(download.path, this.vault.configDir)) summary.restartRequired = true;
+		if (pathRequiresObsidianRestart(download.path, this.vault.configDir)) markRestart(summary, download.path);
         continue;
       }
       if (await this.fileMatches(download.tempPath, download.hash, download.size)) {
         await this.installDownload(download);
         await this.finishDownload(download);
         summary.downloaded += 1;
-        if (pathRequiresObsidianRestart(download.path, this.vault.configDir)) summary.restartRequired = true;
+		if (pathRequiresObsidianRestart(download.path, this.vault.configDir)) markRestart(summary, download.path);
         continue;
       }
       if (!await this.adapter.exists(download.path) && await this.adapter.exists(download.backupPath)) {
@@ -1038,4 +1144,16 @@ function stateFromChange(change: Change): FileState {
 
 function positiveInteger(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function markRestart(summary: SyncSummary, path: string): void {
+	summary.restartRequired = true;
+	if (!summary.restartPaths.includes(path)) summary.restartPaths.push(path);
+}
+
+export class SyncPausedError extends Error {
+	constructor() {
+		super("同步已在安全边界暂停");
+		this.name = "SyncPausedError";
+	}
 }

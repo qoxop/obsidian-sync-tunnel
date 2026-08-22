@@ -6,3 +6,44 @@
   color: var(--text-warning);
   margin-bottom: var(--size-4-3);
 }
+
+.sync-tunnel-record-list {
+  display: grid;
+  gap: var(--size-4-2);
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.sync-tunnel-record {
+  padding: var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+}
+
+.sync-tunnel-record > div {
+  margin-top: var(--size-2-2);
+  color: var(--text-muted);
+}
+
+.sync-tunnel-record-list progress {
+  width: 100%;
+}
+
+.sync-tunnel-diff-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--size-4-3);
+}
+
+.sync-tunnel-diff-text {
+  width: 100%;
+  min-height: 50vh;
+  margin-top: var(--size-4-2);
+  font-family: var(--font-monospace);
+  white-space: pre;
+}
+
+@media (max-width: 700px) {
+  .sync-tunnel-diff-grid { grid-template-columns: 1fr; }
+}

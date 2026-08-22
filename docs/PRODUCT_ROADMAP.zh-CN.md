@@ -1,5 +1,7 @@
 # Sync Tunnel 产品路线图
 
+> 状态：0.2–0.5 规划内容已经合并实现为 `1.0.0-rc.1`；当前门槛是人工多平台验收和 RC 灰度。1.0 前不维护任何旧协议兼容，最终实现以[1.0 架构](ARCHITECTURE_1.0.zh-CN.md)、[1.0 协议](PROTOCOL_1.0.zh-CN.md)和[人工验收](MANUAL_ACCEPTANCE_1.0.zh-CN.md)为准。下方 0.x 小节仅保留路线历史。
+
 ## 1. 产品定义
 
 Sync Tunnel 1.0 面向单个自托管管理员，提供多 Vault、多设备的 Obsidian 文件同步。客户端覆盖 Windows、macOS、Android 和 iOS；服务端优先支持 Windows Docker Desktop，并保持标准 OCI 容器兼容性。

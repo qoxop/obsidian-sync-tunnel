@@ -1,173 +1,127 @@
-# Docker 部署设计与运维说明
+# Docker Desktop 部署与运维
 
-## 架构
+## 安全拓扑
 
-```mermaid
-flowchart LR
-    A["Obsidian 客户端"] -->|"HTTPS"| B["Cloudflare"]
-    B -->|"Outbound Tunnel"| C["Windows cloudflared 服务"]
-    C -->|"HTTP 127.0.0.1:8787"| D["Docker Desktop 端口映射"]
-    D --> E["Go 容器 :8787"]
-    E -->|"bind mount /data"| F["Windows 数据目录\nsync.db + blobs + logs"]
-    G["Windows Token 文件"] -->|"read-only Compose secret"| E
-```
+| 端口 | 宿主机绑定 | 使用者 | 是否进入 Cloudflare |
+|---|---|---|---|
+| 8787 | `127.0.0.1` | `cloudflared` / 本机健康检查 | 是 |
+| 8788 | `127.0.0.1` | Windows 管理脚本 | 否，禁止 |
 
-容器内必须监听 `0.0.0.0:8787`，否则 Docker NAT 无法访问；这不等于宿主机公开监听。`compose.yml` 使用长格式端口配置，把 `host_ip` 固定为 `127.0.0.1`。服务本身还要求显式 `--allow-non-loopback`，避免在非容器场景误用。
+容器内部两个端口显式监听 `0.0.0.0` 供 Docker NAT 使用，但 Compose 的 `host_ip` 固定为 `127.0.0.1`。服务要求两个独立的显式 non-loopback opt-in，防止原生部署误暴露管理端。
 
-## 镜像安全属性
+最终镜像使用非 root distroless、只读根文件系统、删除 capabilities、`no-new-privileges`，`/tmp` 为小型 tmpfs。`/data` 和 `/backups` 是 Windows bind mount；Admin Token 通过只读 Compose secret 挂入 `/run/secrets/sync_admin_token`。
 
-- 多阶段构建，最终镜像不包含 Go 工具链；
-- 最终基础镜像为 distroless static，没有 shell 和包管理器；
-- UID/GID 65532 非 root 运行；
-- 根文件系统只读；
-- `/data` 是唯一持久化写目录，`/tmp` 是受限 tmpfs；
-- 删除全部 Linux capabilities；
-- 启用 `no-new-privileges`；
-- Token 使用只读 Compose secret，而不是环境变量；
-- Docker healthcheck 调用服务端内置的 `healthcheck` 子命令；
-- `SIGTERM` 会触发 Go HTTP 和 SQLite 的优雅关闭。
-
-## 宿主机持久化
-
-Compose 使用 bind mount：
-
-```yaml
-volumes:
-  - type: bind
-    source: ${OBSIDIAN_SYNC_DATA_DIR}
-    target: /data
-```
-
-因此删除容器、重新构建镜像或运行 `docker compose down` 都不会删除 SQLite。数据生命周期由 Windows 路径控制，而不是由容器 ID 控制。
-
-目录中可能出现：
-
-```text
-sync.db
-sync.db-wal
-sync.db-shm
-server.jsonl
-blobs/
-```
-
-服务运行时不要直接复制单独的 `sync.db`。使用 `scripts/docker-backup.ps1` 先优雅停止容器，让 WAL checkpoint 和数据库句柄关闭，再复制完整 `/data`。0.3 起 Chunk 内容位于 `blobs/`，数据库与该目录必须来自同一次一致备份。
-
-## 端口边界
-
-容器内部：
-
-```text
-0.0.0.0:8787
-```
-
-Windows 宿主机：
-
-```text
-127.0.0.1:${OBSIDIAN_SYNC_PORT}
-```
-
-验证命令：
+## 全新初始化
 
 ```powershell
-docker compose port sync-server 8787
-Get-NetTCPConnection -LocalPort 8787 -State Listen
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\docker-init.ps1
+.\scripts\docker-up.ps1
 ```
 
-不要把 Compose 的 `host_ip` 改为 `0.0.0.0`。Cloudflare Tunnel 在同一 Windows 主机上，可以直接访问回环端口。
-
-## 配置和密钥
-
-`.env` 只保存版本、端口、上传限制和宿主机路径，不保存 API Token。Token 单独保存在 `OBSIDIAN_SYNC_TOKEN_FILE` 指向的文件中，并由 Compose 只读挂载为：
+默认创建：
 
 ```text
-/run/secrets/sync_api_token
+.env                         版本、回环端口、限制和宿主机路径
+runtime-data/                sync.db、WAL、Chunk、JSONL 日志
+runtime-backups/             在线一致备份
+secrets/admin-token.txt      本机 Admin Token，不用于客户端
 ```
 
-`.env`、`runtime-data` 和 `secrets` 均已加入 `.gitignore`。`docker compose config` 会显示宿主机路径，但不会显示 Token 内容。
+自定义路径：
+
+```powershell
+.\scripts\docker-init.ps1 `
+  -DataDirectory 'D:\ObsidianSync\data' `
+  -BackupDirectory 'E:\ObsidianSyncBackups' `
+  -AdminTokenFile 'D:\ObsidianSync\secrets\admin-token.txt' `
+  -HostPort 8787 -AdminHostPort 8788 `
+  -MaxFileBytes 67108864 `
+  -Version '1.0.0-rc.1'
+```
+
+已有 `.env` 默认不会覆盖。1.0 不兼容升级必须先保留旧数据，再用新目录和 `-ForceConfig`，见[升级指引](UPGRADE_TO_1.0.zh-CN.md)。
+
+## 验证监听和容器
+
+```powershell
+docker compose config --quiet
+docker compose ps
+docker compose port sync-server 8787
+docker compose port sync-server 8788
+Invoke-RestMethod http://127.0.0.1:8787/healthz
+Invoke-RestMethod http://127.0.0.1:8788/healthz
+.\scripts\docker-logs.ps1 -Tail 100
+```
+
+两项 `docker compose port` 必须显示 `127.0.0.1`。不要把 Compose `host_ip` 改为 `0.0.0.0`，不要把 Admin Token 放到 `.env`，不要让 Tunnel 指向 8788。
+
+## 管理 Vault 和设备
+
+```powershell
+.\scripts\admin.ps1 -ListVaults
+.\scripts\admin.ps1 -CreateVault -VaultId personal-notes -DisplayName 'Personal notes'
+.\scripts\admin.ps1 -UpdateVault -VaultId personal-notes -DisplayName 'Personal notes' -VaultStatus suspended
+.\scripts\admin.ps1 -CreatePairing -VaultId personal-notes -TTLSeconds 600
+.\scripts\admin.ps1 -ListDevices -VaultId personal-notes
+.\scripts\admin.ps1 -SetDeviceStatus -VaultId personal-notes -DeviceId '<id>' -Status revoked
+.\scripts\admin.ps1 -Stats
+.\scripts\admin.ps1 -Doctor
+.\scripts\admin.ps1 -ListAudit
+```
+
+`admin.ps1` 默认从 `secrets/admin-token.txt` 读取 Token，不打印 Token。配对码会显示一次，短期有效且只能用一次；每台设备生成新的码。
+
+GC 始终两步：
+
+```powershell
+$plan = .\scripts\admin.ps1 -PlanGC -RetentionDays 90 -KeepVersions 20
+$plan
+.\scripts\admin.ps1 -ExecuteGC -PlanId $plan.id -PlanHash $plan.hash
+```
+
+执行前审查水位线、revision、路径数和预计字节。Hash 不匹配或计划已执行时服务拒绝操作。
+
+## 在线备份、验证和恢复
+
+服务运行时不要复制 live `sync.db` 或单独复制 `blobs/`。在线备份：
+
+```powershell
+.\scripts\docker-backup.ps1 -KeepLast 7
+.\scripts\docker-verify-backup.ps1 -BackupDirectory '<备份目录>'
+```
+
+服务用 `VACUUM INTO` 生成 SQLite 快照，复制 Chunk，并生成逐文件 SHA-256 `backup.json`。`-KeepLast` 只删除配置备份根目录内、名称符合时间格式且含 manifest 的旧备份。
+
+恢复仅用于已经验证的备份：
+
+```powershell
+.\scripts\docker-restore.ps1 -BackupDirectory '<备份目录>' -ConfirmRestore
+```
+
+脚本停止服务，把 live 数据移动为带时间戳 rollback 目录，新建数据目录、复制备份、启动并等待 healthy；失败时自动保留失败目录并恢复旧数据。成功后旧 live 数据仍保留，确认一段时间后再人工处理。
+
+备份包含明文 Vault 内容但不包含 Admin/设备 Token。至少复制一份到服务器电脑以外的加密存储，并定期执行恢复演练。
+
+## Cloudflare Tunnel
+
+Windows `cloudflared` 保持独立服务，Origin 为：
+
+```text
+http://127.0.0.1:<OBSIDIAN_SYNC_PORT>
+```
+
+推荐在该 Public Hostname 上配置 Cloudflare Access Self-hosted Application + Service Token。Access 保护边缘，设备凭据保护 Vault，两者都需要。管理端永不创建 Public Hostname。
+
+502 排查顺序：本机 8787 health → `docker compose ps`/logs → `Get-Service cloudflared` → Tunnel connector → Access policy。`ERR_INTERNET_DISCONNECTED` 是客户端网络层错误，恢复网络后持久化 outbox/inbox 继续。
 
 ## 生命周期
 
-初始化：
-
 ```powershell
-.\scripts\docker-init.ps1
-```
-
-构建和启动：
-
-```powershell
-.\scripts\docker-up.ps1
-```
-
-查看状态和日志：
-
-```powershell
-docker compose ps
+.\scripts\docker-up.ps1            # 构建并启动/升级
+.\scripts\docker-up.ps1 -NoBuild   # 启动已有镜像
 .\scripts\docker-logs.ps1 -Follow
+.\scripts\docker-down.ps1          # 删除容器/网络，保留 bind mount
 ```
 
-重启：
-
-```powershell
-docker compose restart sync-server
-```
-
-停止并移除容器：
-
-```powershell
-.\scripts\docker-down.ps1
-```
-
-一致性备份：
-
-```powershell
-.\scripts\docker-backup.ps1 -DestinationDirectory 'E:\Backups\ObsidianSync'
-```
-
-每份备份包含 `data/` 和 `backup.json`。脚本会复验数据库 SHA-256，但备份仍包含明文 Vault 内容，应复制到另一台设备上的加密存储。
-
-## 升级与回滚原则
-
-升级前先备份，再重新构建：
-
-```powershell
-.\scripts\docker-backup.ps1 -DestinationDirectory 'E:\Backups\ObsidianSync'
-.\scripts\docker-up.ps1
-```
-
-镜像与 bind-mounted 数据分离，但镜像回滚不等于数据回滚。0.3 数据库升级到 schema 4，0.2 服务会拒绝打开更高版本数据库；回到 0.2 时必须停止容器，将升级前备份的整个 `data/` 恢复到一个新目录，再让 Compose 指向该目录。不要把旧 `sync.db` 与新 `blobs/` 混用。
-
-## Cloudflare 连接
-
-本方案不把 `cloudflared` 放入同一个 Compose 项目，原因是：
-
-- 用户明确需要把 Go 服务端口映射到 Windows；
-- Windows 服务能在 Docker Desktop尚未完全启动时独立重试；
-- Tunnel Token 生命周期不与应用容器重建绑定；
-- Origin 始终清晰地指向 `http://127.0.0.1:${OBSIDIAN_SYNC_PORT}`。
-
-Cloudflare Dashboard 中的 Published Application Route 必须与 `.env` 中端口一致。API 自己的 Bearer Token 仍然必需；建议再叠加 Cloudflare Access Service Token。
-
-## 故障排查
-
-容器不健康：
-
-```powershell
-docker compose ps
-docker inspect obsidian-sync-server --format '{{json .State.Health}}'
-.\scripts\docker-logs.ps1 -Tail 200
-```
-
-挂载失败：
-
-- 确认 `.env` 中路径存在；
-- 确认 Docker Desktop 有权访问对应 Windows 磁盘；
-- 不要手工删除正在使用的 `sync.db-wal` 或 `sync.db-shm`；
-- 用 `docker compose config` 查看解析后的绝对路径。
-
-Cloudflare 返回 502：
-
-- 先确认 `Invoke-RestMethod http://127.0.0.1:8787/healthz`；
-- 再确认 Cloudflare Origin 端口与 `.env` 一致；
-- 检查 `Get-Service cloudflared`；
-- 检查 `cloudflared` 日志和 Tunnel Dashboard 的 connector 状态。
+Docker Desktop 和 `cloudflared` 应随 Windows 登录启动。升级前先做在线备份；镜像回滚不等于数据库回滚，必须恢复同一时点的整个 `sync.db + blobs` 数据集。

@@ -382,5 +382,8 @@ func openTestStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.CreateVault(context.Background(), "vault-a", "Test Vault", 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	return db
 }

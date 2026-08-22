@@ -4,7 +4,7 @@ param(
     [string]$InstallDirectory = "C:\ProgramData\ObsidianSyncTunnel",
     [string]$ServiceName = "ObsidianSyncTunnel",
     [string]$SourceBinary = "",
-    [int64]$MaxUploadBytes = 67108864
+    [int64]$MaxFileBytes = 67108864
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,7 +23,7 @@ $dataDirectory = Join-Path $InstallDirectory "data"
 $logDirectory = Join-Path $InstallDirectory "logs"
 $targetBinary = Join-Path $binDirectory "obsidian-sync-server.exe"
 $configPath = Join-Path $InstallDirectory "config.json"
-$tokenPath = Join-Path $InstallDirectory "token.txt"
+$tokenPath = Join-Path $InstallDirectory "admin-token.txt"
 
 New-Item -ItemType Directory -Path $InstallDirectory, $binDirectory, $dataDirectory, $logDirectory -Force | Out-Null
 & icacls.exe $InstallDirectory /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" | Out-Null
@@ -47,10 +47,11 @@ if (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) {
 
 $config = [ordered]@{
     listen = "127.0.0.1:8787"
+	admin_listen = "127.0.0.1:8788"
     database_path = "data/sync.db"
-    token_file = "token.txt"
+	admin_token_file = "admin-token.txt"
     log_path = "logs/server.jsonl"
-    max_upload_bytes = $MaxUploadBytes
+    max_file_bytes = $MaxFileBytes
 }
 [System.IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json), [System.Text.UTF8Encoding]::new($false))
 
@@ -82,8 +83,7 @@ Write-Host "Server service is running: $ServiceName"
 Write-Host "Install directory: $InstallDirectory"
 Write-Host "Log file: $logDirectory\server.jsonl"
 if ($generatedToken) {
-    Write-Warning "This is the only automatic display of the newly generated API token. Put it in a password manager and Obsidian SecretStorage now:"
-    Write-Host $token
+	Write-Warning "A local Admin Token was generated in $tokenPath. It is not printed and must never be entered into Obsidian."
 } else {
-    Write-Host "The existing API token was retained."
+	Write-Host "The existing Admin Token was retained."
 }

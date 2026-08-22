@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -20,7 +21,7 @@ import (
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var operationIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
-const CurrentSchemaVersion = 4
+const CurrentSchemaVersion = 7
 
 var migrations = [][]string{
 	{
@@ -89,21 +90,114 @@ var migrations = [][]string{
 	{
 		`ALTER TABLE operations ADD COLUMN related_json TEXT NOT NULL DEFAULT '[]'`,
 	},
+	{
+		`CREATE TABLE IF NOT EXISTS vaults (
+			id TEXT PRIMARY KEY,
+			display_name TEXT NOT NULL,
+			quota_bytes INTEGER NOT NULL DEFAULT 0,
+			max_files INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT OR IGNORE INTO vaults(id, display_name, created_at, updated_at)
+		 SELECT vault_id, vault_id, MIN(created_at), MAX(created_at) FROM changes GROUP BY vault_id`,
+		`CREATE TABLE IF NOT EXISTS devices (
+			vault_id TEXT NOT NULL,
+			id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			platform TEXT NOT NULL,
+			client_version TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			registered_at INTEGER NOT NULL,
+			last_seen_at INTEGER NOT NULL,
+			last_ack_revision INTEGER NOT NULL DEFAULT 0,
+			retired_at INTEGER,
+			revoked_at INTEGER,
+			PRIMARY KEY(vault_id, id),
+			FOREIGN KEY(vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS devices_vault_status ON devices(vault_id, status)`,
+		`CREATE TABLE IF NOT EXISTS auth_tokens (
+			id TEXT PRIMARY KEY,
+			token_prefix TEXT NOT NULL,
+			token_hash TEXT NOT NULL UNIQUE,
+			vault_id TEXT NOT NULL,
+			device_id TEXT NOT NULL,
+			scopes TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER,
+			last_used_at INTEGER,
+			revoked_at INTEGER,
+			FOREIGN KEY(vault_id, device_id) REFERENCES devices(vault_id, id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS auth_tokens_prefix ON auth_tokens(token_prefix)`,
+		`CREATE TABLE IF NOT EXISTS pairing_codes (
+			code_hash TEXT PRIMARY KEY,
+			vault_id TEXT NOT NULL,
+			scopes TEXT NOT NULL,
+			expires_at INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			used_at INTEGER,
+			FOREIGN KEY(vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS pairing_codes_expiry ON pairing_codes(expires_at)`,
+		`CREATE TABLE IF NOT EXISTS audit_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_type TEXT NOT NULL,
+			vault_id TEXT,
+			device_id TEXT,
+			actor TEXT NOT NULL,
+			request_id TEXT,
+			details_json TEXT NOT NULL DEFAULT '{}',
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS audit_events_created ON audit_events(created_at DESC)`,
+	},
+	{
+		`ALTER TABLE changes ADD COLUMN operation_kind TEXT NOT NULL DEFAULT 'sync'`,
+		`ALTER TABLE changes ADD COLUMN restored_from_revision INTEGER`,
+		`CREATE INDEX IF NOT EXISTS changes_history ON changes(vault_id, path, seq DESC, created_at DESC)`,
+	},
+	{
+		`CREATE TABLE IF NOT EXISTS gc_plans (
+			id TEXT PRIMARY KEY,
+			plan_hash TEXT NOT NULL,
+			plan_json TEXT NOT NULL,
+			status TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			executed_at INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS backup_runs (
+			id TEXT PRIMARY KEY,
+			destination TEXT NOT NULL,
+			status TEXT NOT NULL,
+			manifest_hash TEXT,
+			created_at INTEGER NOT NULL,
+			completed_at INTEGER,
+			error_text TEXT
+		)`,
+	},
 }
 
 type Store struct {
-	db      *sql.DB
-	blobDir string
+	db           *sql.DB
+	blobDir      string
+	databasePath string
+	limits       ResourceLimits
+	maintenance  sync.Mutex
 }
 
 type Change struct {
-	Revision   int64  `json:"revision"`
-	Path       string `json:"path"`
-	BlobHash   string `json:"blob_hash,omitempty"`
-	Size       int64  `json:"size"`
-	ModifiedAt int64  `json:"modified_at"`
-	Deleted    bool   `json:"deleted"`
-	DeviceID   string `json:"device_id"`
+	Revision             int64  `json:"revision"`
+	Path                 string `json:"path"`
+	BlobHash             string `json:"blob_hash,omitempty"`
+	Size                 int64  `json:"size"`
+	ModifiedAt           int64  `json:"modified_at"`
+	Deleted              bool   `json:"deleted"`
+	DeviceID             string `json:"device_id"`
+	OperationKind        string `json:"operation_kind,omitempty"`
+	RestoredFromRevision int64  `json:"restored_from_revision,omitempty"`
 }
 
 type ConflictError struct {
@@ -132,7 +226,7 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	store := &Store{db: db, blobDir: filepath.Join(filepath.Dir(path), "blobs")}
+	store := &Store{db: db, blobDir: filepath.Join(filepath.Dir(path), "blobs"), databasePath: path}
 	if err := store.initialize(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -231,6 +325,9 @@ func (s *Store) Put(ctx context.Context, vaultID, filePath, deviceID string, bas
 }
 
 func (s *Store) PutWithOperation(ctx context.Context, vaultID, filePath, deviceID, operationID string, baseRevision, modifiedAt int64, expectedHash string, data []byte) (Change, bool, error) {
+	if err := s.CheckCommitAllowed(ctx, vaultID, filePath, int64(len(data))); err != nil {
+		return Change{}, false, err
+	}
 	actualHash := Hash(data)
 	if actualHash != strings.ToLower(expectedHash) {
 		return Change{}, false, errors.New("content SHA-256 does not match header")
@@ -448,7 +545,7 @@ func (s *Store) ListChanges(ctx context.Context, vaultID string, after int64, li
 	if limit < 1 || limit > 1000 {
 		return nil, false, errors.New("limit must be between 1 and 1000")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT seq, path, blob_hash, size, modified_at, deleted, device_id
+	rows, err := s.db.QueryContext(ctx, `SELECT seq, path, blob_hash, size, modified_at, deleted, device_id, operation_kind, COALESCE(restored_from_revision,0)
 		FROM changes WHERE vault_id=? AND seq>? ORDER BY seq ASC LIMIT ?`, vaultID, after, limit+1)
 	if err != nil {
 		return nil, false, err
@@ -458,7 +555,7 @@ func (s *Store) ListChanges(ctx context.Context, vaultID string, after int64, li
 	for rows.Next() {
 		var change Change
 		var hash sql.NullString
-		if err := rows.Scan(&change.Revision, &change.Path, &hash, &change.Size, &change.ModifiedAt, &change.Deleted, &change.DeviceID); err != nil {
+		if err := rows.Scan(&change.Revision, &change.Path, &hash, &change.Size, &change.ModifiedAt, &change.Deleted, &change.DeviceID, &change.OperationKind, &change.RestoredFromRevision); err != nil {
 			return nil, false, err
 		}
 		change.BlobHash = hash.String
@@ -494,7 +591,7 @@ func (s *Store) ListSnapshot(ctx context.Context, vaultID string, atRevision int
 			return nil, false, fmt.Errorf("invalid snapshot cursor: %w", err)
 		}
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.path, c.blob_hash, c.size, c.modified_at, c.deleted, c.device_id
+	rows, err := s.db.QueryContext(ctx, `SELECT c.seq, c.path, c.blob_hash, c.size, c.modified_at, c.deleted, c.device_id, c.operation_kind, COALESCE(c.restored_from_revision,0)
 		FROM changes c
 		JOIN (
 			SELECT path, MAX(seq) AS seq
@@ -513,7 +610,7 @@ func (s *Store) ListSnapshot(ctx context.Context, vaultID string, atRevision int
 	for rows.Next() {
 		var change Change
 		var hash sql.NullString
-		if err := rows.Scan(&change.Revision, &change.Path, &hash, &change.Size, &change.ModifiedAt, &change.Deleted, &change.DeviceID); err != nil {
+		if err := rows.Scan(&change.Revision, &change.Path, &hash, &change.Size, &change.ModifiedAt, &change.Deleted, &change.DeviceID, &change.OperationKind, &change.RestoredFromRevision); err != nil {
 			return nil, false, err
 		}
 		change.BlobHash = hash.String

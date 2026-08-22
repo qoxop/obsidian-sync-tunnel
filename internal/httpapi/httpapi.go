@@ -1,14 +1,16 @@
 package httpapi
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
+	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,38 +19,88 @@ import (
 	"obsidian-sync-tunnel/internal/store"
 )
 
-type API struct {
-	store          *store.Store
-	tokenHash      [32]byte
-	maxUploadBytes int64
-	version        string
-	logger         *slog.Logger
+type Options struct {
+	MaxFileBytes      int64
+	RequestsPerMinute int
+	BytesPerMinute    int64
+	Version           string
 }
 
-func New(db *store.Store, token string, maxUploadBytes int64, version string, logger *slog.Logger) http.Handler {
-	api := &API{store: db, tokenHash: sha256.Sum256([]byte(token)), maxUploadBytes: maxUploadBytes, version: version, logger: logger}
+type API struct {
+	store        *store.Store
+	maxFileBytes int64
+	version      string
+	logger       *slog.Logger
+	limiter      *rateLimiter
+	pairLimiter  *rateLimiter
+}
+
+type principalContextKey struct{}
+type requestIDContextKey struct{}
+
+func New(db *store.Store, options Options, logger *slog.Logger) http.Handler {
+	api := &API{
+		store: db, maxFileBytes: options.MaxFileBytes, version: options.Version, logger: logger,
+		limiter:     newRateLimiter(options.RequestsPerMinute, options.BytesPerMinute),
+		pairLimiter: newRateLimiter(20, 1024*1024),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
-	mux.HandleFunc("GET /api/v2/server-info", api.serverInfo)
-	mux.HandleFunc("GET /api/v2/vaults/{vault}/snapshot", api.snapshot)
-	mux.HandleFunc("GET /api/v2/vaults/{vault}/operations/{operation}", api.operation)
-	mux.HandleFunc("POST /api/v2/vaults/{vault}/chunks/missing", api.missingChunks)
-	mux.HandleFunc("PUT /api/v2/vaults/{vault}/chunks/{hash}", api.putChunk)
-	mux.HandleFunc("GET /api/v2/vaults/{vault}/chunks/{hash}", api.getChunk)
-	mux.HandleFunc("GET /api/v2/vaults/{vault}/manifests/{hash}", api.getManifest)
-	mux.HandleFunc("POST /api/v2/vaults/{vault}/files/commit", api.commitManifest)
-	mux.HandleFunc("POST /api/v2/vaults/{vault}/rename", api.renameFile)
-	mux.HandleFunc("POST /api/v2/vaults/{vault}/batch/delete", api.batchDelete)
-	mux.HandleFunc("GET /api/v1/vaults/{vault}/status", api.status)
-	mux.HandleFunc("GET /api/v1/vaults/{vault}/changes", api.changes)
-	mux.HandleFunc("GET /api/v1/vaults/{vault}/blobs/{hash}", api.blob)
-	mux.HandleFunc("PUT /api/v1/vaults/{vault}/file", api.putFile)
-	mux.HandleFunc("DELETE /api/v1/vaults/{vault}/file", api.deleteFile)
-	return api.securityHeaders(api.accessLog(api.authenticate(mux)))
+	mux.HandleFunc("POST /api/v1/pair", api.pair)
+	mux.Handle("GET /api/v1/server-info", api.authenticate("sync:read", http.HandlerFunc(api.serverInfo)))
+	mux.Handle("GET /api/v1/vaults/{vault}", api.authenticate("sync:read", http.HandlerFunc(api.vaultInfo)))
+	mux.Handle("GET /api/v1/vaults/{vault}/status", api.authenticate("sync:read", http.HandlerFunc(api.status)))
+	mux.Handle("GET /api/v1/vaults/{vault}/changes", api.authenticate("sync:read", http.HandlerFunc(api.changes)))
+	mux.Handle("GET /api/v1/vaults/{vault}/snapshot", api.authenticate("sync:read", http.HandlerFunc(api.snapshot)))
+	mux.Handle("GET /api/v1/vaults/{vault}/operations/{operation}", api.authenticate("sync:read", http.HandlerFunc(api.operation)))
+	mux.Handle("POST /api/v1/vaults/{vault}/chunks/missing", api.authenticate("sync:write", http.HandlerFunc(api.missingChunks)))
+	mux.Handle("PUT /api/v1/vaults/{vault}/chunks/{hash}", api.authenticate("sync:write", http.HandlerFunc(api.putChunk)))
+	mux.Handle("GET /api/v1/vaults/{vault}/chunks/{hash}", api.authenticate("sync:read", http.HandlerFunc(api.getChunk)))
+	mux.Handle("GET /api/v1/vaults/{vault}/manifests/{hash}", api.authenticate("sync:read", http.HandlerFunc(api.getManifest)))
+	mux.Handle("GET /api/v1/vaults/{vault}/blobs/{hash}", api.authenticate("sync:read", http.HandlerFunc(api.blob)))
+	mux.Handle("POST /api/v1/vaults/{vault}/files/commit", api.authenticate("sync:write", http.HandlerFunc(api.commitManifest)))
+	mux.Handle("PUT /api/v1/vaults/{vault}/files/content", api.authenticate("sync:write", http.HandlerFunc(api.putFile)))
+	mux.Handle("DELETE /api/v1/vaults/{vault}/files/content", api.authenticate("sync:write", http.HandlerFunc(api.deleteFile)))
+	mux.Handle("POST /api/v1/vaults/{vault}/rename", api.authenticate("sync:write", http.HandlerFunc(api.renameFile)))
+	mux.Handle("POST /api/v1/vaults/{vault}/batch/delete", api.authenticate("sync:write", http.HandlerFunc(api.batchDelete)))
+	mux.Handle("POST /api/v1/vaults/{vault}/ack", api.authenticate("sync:read", http.HandlerFunc(api.acknowledge)))
+	mux.Handle("GET /api/v1/vaults/{vault}/history", api.authenticate("history:read", http.HandlerFunc(api.history)))
+	mux.Handle("POST /api/v1/vaults/{vault}/restore", api.authenticate("restore:write", http.HandlerFunc(api.restore)))
+	mux.Handle("POST /api/v1/vaults/{vault}/credential/rotate", api.authenticate("sync:read", http.HandlerFunc(api.rotateCredential)))
+	return api.securityHeaders(api.requestID(api.accessLog(mux)))
 }
 
 func (a *API) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "version": a.version})
+}
+
+func (a *API) pair(w http.ResponseWriter, r *http.Request) {
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if host == "" {
+		host = r.RemoteAddr
+	}
+	if allowed, retry := a.pairLimiter.allow("pair:"+host, requestBodySize(r)); !allowed {
+		w.Header().Set("Retry-After", strconv.Itoa(retry))
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "pairing request limit exceeded")
+		return
+	}
+	var request struct {
+		VaultID       string `json:"vault_id"`
+		Code          string `json:"code"`
+		DeviceName    string `json:"device_name"`
+		Platform      string `json:"platform"`
+		ClientVersion string `json:"client_version"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16*1024)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid pairing request")
+		return
+	}
+	result, err := a.store.PairDevice(r.Context(), request.VaultID, request.Code, request.DeviceName, request.Platform, request.ClientVersion)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "pairing_failed", "pairing code is invalid, expired, or already used")
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
 }
 
 func (a *API) serverInfo(w http.ResponseWriter, r *http.Request) {
@@ -59,17 +111,30 @@ func (a *API) serverInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"server_version": a.version,
-		"protocol":       map[string]int{"min": 1, "max": 2},
-		"capabilities":   []string{"snapshot-v1", "operation-id", "whole-file-v1", "chunk-upload-v1", "chunk-download-v1", "rename-v1", "batch-delete-v1"},
-		"database":       map[string]int{"schema_version": schemaVersion},
+		"protocol":       map[string]int{"version": 1},
+		"capabilities": []string{
+			"snapshot", "idempotent-operations", "whole-file", "chunk-transfer", "rename", "batch-delete",
+			"device-pairing", "device-ack", "history", "restore", "scoped-credentials",
+		},
+		"database": map[string]int{"schema_version": schemaVersion},
 		"limits": map[string]any{
-			"max_upload_bytes":  a.maxUploadBytes,
-			"max_page_size":     1000,
-			"chunk_size":        store.ChunkSize,
-			"max_chunk_query":   1000,
-			"chunk_concurrency": 3,
+			"max_file_bytes": a.maxFileBytes, "max_page_size": 1000, "chunk_size": store.ChunkSize,
+			"max_chunk_query": 1000, "chunk_concurrency": 3,
 		},
 	})
+}
+
+func (a *API) vaultInfo(w http.ResponseWriter, r *http.Request) {
+	vault, err := a.store.GetVault(r.Context(), r.PathValue("vault"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "vault not found")
+		return
+	}
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, vault)
 }
 
 func (a *API) status(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +143,7 @@ func (a *API) status(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"latest_revision": revision, "max_upload_bytes": a.maxUploadBytes})
+	writeJSON(w, http.StatusOK, map[string]any{"latest_revision": revision, "max_file_bytes": a.maxFileBytes})
 }
 
 func (a *API) changes(w http.ResponseWriter, r *http.Request) {
@@ -133,21 +198,12 @@ func (a *API) snapshot(w http.ResponseWriter, r *http.Request) {
 	if len(files) > 0 {
 		cursor = files[len(files)-1].Path
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"files":             files,
-		"snapshot_revision": at,
-		"cursor":            cursor,
-		"has_more":          hasMore,
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"files": files, "snapshot_revision": at, "cursor": cursor, "has_more": hasMore})
 }
 
 func (a *API) operation(w http.ResponseWriter, r *http.Request) {
-	deviceID := r.Header.Get("X-Device-ID")
-	if deviceID == "" {
-		writeError(w, http.StatusBadRequest, "missing_device", "X-Device-ID is required")
-		return
-	}
-	change, related, changed, found, err := a.store.GetOperationDetails(r.Context(), r.PathValue("vault"), deviceID, r.PathValue("operation"))
+	principal := requestPrincipal(r)
+	change, related, changed, found, err := a.store.GetOperationDetails(r.Context(), r.PathValue("vault"), principal.DeviceID, r.PathValue("operation"))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -171,7 +227,6 @@ func (a *API) blob(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
 }
@@ -181,16 +236,23 @@ func (a *API) putFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, a.maxUploadBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, a.maxFileBytes)
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "file_too_large", fmt.Sprintf("file exceeds %d bytes", a.maxUploadBytes))
+			writeError(w, http.StatusRequestEntityTooLarge, "file_too_large", fmt.Sprintf("file exceeds %d bytes", a.maxFileBytes))
 			return
 		}
 		writeError(w, http.StatusBadRequest, "read_failed", "could not read request body")
 		return
+	}
+	if r.ContentLength <= 0 {
+		if allowed, retry := a.limiter.chargeBytes(requestPrincipal(r).TokenID, int64(len(data))); !allowed {
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "device byte limit exceeded")
+			return
+		}
 	}
 	change, changed, err := a.store.PutWithOperation(r.Context(), r.PathValue("vault"), r.URL.Query().Get("path"), metadata.deviceID, metadata.operationID, metadata.baseRevision, metadata.modifiedAt, r.Header.Get("X-Content-SHA256"), data)
 	writeMutationResult(w, change, changed, err)
@@ -205,6 +267,67 @@ func (a *API) deleteFile(w http.ResponseWriter, r *http.Request) {
 	writeMutationResult(w, change, changed, err)
 }
 
+func (a *API) acknowledge(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Revision int64 `json:"revision"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid acknowledgement")
+		return
+	}
+	principal := requestPrincipal(r)
+	if err := a.store.AcknowledgeDevice(r.Context(), r.PathValue("vault"), principal.DeviceID, request.Revision); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) history(w http.ResponseWriter, r *http.Request) {
+	before, err := parseIntQuery(r, "before", 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_cursor", "before must be a non-negative revision")
+		return
+	}
+	limit, err := parseIntQuery(r, "limit", 50)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_limit", "limit is invalid")
+		return
+	}
+	page, err := a.store.ListHistory(r.Context(), r.PathValue("vault"), r.URL.Query().Get("path"), before, int(limit), r.URL.Query().Get("deleted") == "true")
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (a *API) restore(w http.ResponseWriter, r *http.Request) {
+	metadata, ok := parseMutationMetadata(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Path           string `json:"path"`
+		SourceRevision int64  `json:"source_revision"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16*1024)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid restore request")
+		return
+	}
+	change, changed, err := a.store.RestoreVersion(r.Context(), r.PathValue("vault"), request.Path, metadata.deviceID, metadata.operationID, request.SourceRevision, metadata.baseRevision, metadata.modifiedAt)
+	writeMutationResult(w, change, changed, err)
+}
+
+func (a *API) rotateCredential(w http.ResponseWriter, r *http.Request) {
+	token, err := a.store.RotateToken(r.Context(), requestPrincipal(r))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": token})
+}
+
 type mutationMetadata struct {
 	deviceID     string
 	operationID  string
@@ -213,9 +336,9 @@ type mutationMetadata struct {
 }
 
 func parseMutationMetadata(w http.ResponseWriter, r *http.Request) (mutationMetadata, bool) {
-	deviceID := r.Header.Get("X-Device-ID")
-	if deviceID == "" {
-		writeError(w, http.StatusBadRequest, "missing_device", "X-Device-ID is required")
+	principal := requestPrincipal(r)
+	if principal.DeviceID == "" {
+		writeError(w, http.StatusUnauthorized, "unpaired_device", "paired device credential required")
 		return mutationMetadata{}, false
 	}
 	baseRevision, err := strconv.ParseInt(r.Header.Get("X-Base-Revision"), 10, 64)
@@ -232,16 +355,13 @@ func parseMutationMetadata(w http.ResponseWriter, r *http.Request) (mutationMeta
 		}
 		modifiedAt = parsed
 	}
-	return mutationMetadata{deviceID: deviceID, operationID: r.Header.Get("X-Operation-ID"), baseRevision: baseRevision, modifiedAt: modifiedAt}, true
+	return mutationMetadata{deviceID: principal.DeviceID, operationID: r.Header.Get("X-Operation-ID"), baseRevision: baseRevision, modifiedAt: modifiedAt}, true
 }
 
 func writeMutationResult(w http.ResponseWriter, change store.Change, changed bool, err error) {
 	var conflict *store.ConflictError
 	if errors.As(err, &conflict) {
-		writeJSON(w, http.StatusConflict, map[string]any{
-			"error":   map[string]string{"code": "revision_conflict", "message": conflict.Error()},
-			"current": conflict.Current,
-		})
+		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]string{"code": "revision_conflict", "message": conflict.Error()}, "current": conflict.Current})
 		return
 	}
 	var reused *store.OperationReuseError
@@ -256,25 +376,42 @@ func writeMutationResult(w http.ResponseWriter, change store.Change, changed boo
 	writeJSON(w, http.StatusOK, map[string]any{"change": change, "changed": changed})
 }
 
-func (a *API) authenticate(next http.Handler) http.Handler {
+func (a *API) authenticate(scope string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
-			next.ServeHTTP(w, r)
-			return
-		}
 		parts := strings.Fields(r.Header.Get("Authorization"))
-		value := ""
-		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-			value = parts[1]
-		}
-		provided := sha256.Sum256([]byte(value))
-		if value == "" || subtle.ConstantTimeCompare(provided[:], a.tokenHash[:]) != 1 {
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 			w.Header().Set("WWW-Authenticate", "Bearer")
-			writeError(w, http.StatusUnauthorized, "unauthorized", "valid bearer token required")
+			writeError(w, http.StatusUnauthorized, "unauthorized", "paired device credential required")
 			return
 		}
-		next.ServeHTTP(w, r)
+		principal, err := a.store.AuthenticateToken(r.Context(), parts[1], r.PathValue("vault"), scope)
+		if err != nil {
+			status, code := http.StatusUnauthorized, "unauthorized"
+			if strings.Contains(err.Error(), "scope") || strings.Contains(err.Error(), "vault") {
+				status, code = http.StatusForbidden, "forbidden"
+			}
+			writeError(w, status, code, "credential is invalid or does not permit this operation")
+			return
+		}
+		if allowed, retry := a.limiter.allow(principal.TokenID, requestBodySize(r)); !allowed {
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "device request or byte limit exceeded")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal)))
 	})
+}
+
+func requestPrincipal(r *http.Request) store.Principal {
+	value, _ := r.Context().Value(principalContextKey{}).(store.Principal)
+	return value
+}
+
+func requestBodySize(r *http.Request) int64 {
+	if r.ContentLength > 0 {
+		return r.ContentLength
+	}
+	return 0
 }
 
 func (a *API) securityHeaders(next http.Handler) http.Handler {
@@ -301,8 +438,35 @@ func (a *API) accessLog(next http.Handler) http.Handler {
 		started := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(recorder, r)
-		a.logger.Info("http request", "method", r.Method, "path", r.URL.Path, "status", recorder.status, "duration_ms", time.Since(started).Milliseconds())
+		a.logger.Info("http request", "request_id", requestIDFrom(r), "method", r.Method, "route", routeForLog(r.URL.Path), "status", recorder.status, "duration_ms", time.Since(started).Milliseconds())
 	})
+}
+
+func (a *API) requestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		value := make([]byte, 12)
+		_, _ = rand.Read(value)
+		requestID := hex.EncodeToString(value)
+		w.Header().Set("X-Request-ID", requestID)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, requestID)))
+	})
+}
+
+func requestIDFrom(r *http.Request) string {
+	value, _ := r.Context().Value(requestIDContextKey{}).(string)
+	return value
+}
+
+func routeForLog(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for index, part := range parts {
+		if index > 1 && (parts[index-1] == "vaults" || parts[index-1] == "chunks" || parts[index-1] == "operations") {
+			parts[index] = ":id"
+		} else if len(part) == 64 {
+			parts[index] = ":hash"
+		}
+	}
+	return "/" + strings.Join(parts, "/")
 }
 
 func parseIntQuery(r *http.Request, key string, fallback int64) (int64, error) {
@@ -314,8 +478,21 @@ func parseIntQuery(r *http.Request, key string, fallback int64) (int64, error) {
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {
+	var resource *store.ResourceLimitError
+	if errors.As(err, &resource) {
+		status := http.StatusRequestEntityTooLarge
+		if resource.Code == "insufficient_storage" {
+			status = http.StatusInsufficientStorage
+		}
+		writeError(w, status, resource.Code, resource.Message)
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "resource not found")
+		return
+	}
 	message := strings.ToLower(err.Error())
-	if strings.Contains(message, "invalid") || strings.Contains(message, "cannot be negative") || strings.Contains(message, "must be between") || strings.Contains(message, "too long") || strings.Contains(message, "does not match") {
+	if strings.Contains(message, "invalid") || strings.Contains(message, "cannot be negative") || strings.Contains(message, "must be") || strings.Contains(message, "too long") || strings.Contains(message, "does not match") {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -326,9 +503,7 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSONStatus(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
 
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	writeJSONStatus(w, status, value)
-}
+func writeJSON(w http.ResponseWriter, status int, value any) { writeJSONStatus(w, status, value) }
 
 func writeJSONStatus(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

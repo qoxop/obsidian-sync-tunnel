@@ -2,7 +2,8 @@ export interface PluginSettings {
   serverUrl: string;
   vaultId: string;
   deviceId: string;
-  apiTokenSecretName: string;
+  deviceName: string;
+  credentialSecretName: string;
   accessClientId: string;
   accessClientSecretName: string;
   automaticSync: boolean;
@@ -10,6 +11,8 @@ export interface PluginSettings {
   syncIntervalSeconds: number;
   syncProfile: SyncProfile;
   excludedPatterns: string[];
+  language: "zh-CN" | "en";
+  mobileMaxFileBytes: number;
 }
 
 export type SyncProfile = "notes" | "recommended" | "full" | "custom";
@@ -91,6 +94,10 @@ export interface PersistedData {
   outbox: Record<string, OutboxOperation>;
   inbox: Record<string, InboxDownload>;
   pendingRenames: Record<string, PendingRename>;
+  paused: boolean;
+  activities: ActivityRecord[];
+  conflicts: ConflictRecord[];
+  lastAcknowledgedRevision: number;
 }
 
 export type InitialSyncMode = "merge" | "remote" | "local";
@@ -121,6 +128,8 @@ export interface Change {
   modified_at: number;
   deleted: boolean;
   device_id: string;
+  operation_kind?: string;
+  restored_from_revision?: number;
 }
 
 export interface MutationResponse {
@@ -142,21 +151,90 @@ export interface ChangesResponse {
 
 export interface StatusResponse {
   latest_revision: number;
-  max_upload_bytes: number;
+  max_file_bytes: number;
 }
 
 export interface ServerInfoResponse {
   server_version: string;
-  protocol: { min: number; max: number };
+  protocol: { version: number };
   capabilities: string[];
   database: { schema_version: number };
   limits: {
-    max_upload_bytes: number;
+    max_file_bytes: number;
     max_page_size: number;
     chunk_size?: number;
     max_chunk_query?: number;
     chunk_concurrency?: number;
   };
+}
+
+export interface PairResponse {
+  vault: VaultInfo;
+  device: DeviceInfo;
+  token: string;
+}
+
+export interface VaultInfo {
+  id: string;
+  display_name: string;
+  quota_bytes: number;
+  max_files: number;
+  status: string;
+}
+
+export interface DeviceInfo {
+  vault_id: string;
+  id: string;
+  name: string;
+  platform: string;
+  client_version: string;
+  status: string;
+  registered_at: number;
+  last_seen_at: number;
+  last_ack_revision: number;
+}
+
+export interface HistoryPage {
+  versions: Change[];
+  cursor: number;
+  has_more: boolean;
+}
+
+export type ActivityStatus = "running" | "completed" | "failed" | "paused" | "cancelled";
+
+export interface ActivityRecord {
+  id: string;
+  startedAt: number;
+  completedAt?: number;
+  status: ActivityStatus;
+  phase: SyncPhase;
+  summary?: SyncSummary;
+  errorCode?: string;
+}
+
+export type SyncPhase = "idle" | "scanning" | "comparing" | "uploading" | "downloading" | "applying" | "paused" | "error";
+
+export interface SyncProgress {
+  phase: SyncPhase;
+  completedFiles: number;
+  totalFiles: number;
+  completedBytes: number;
+  totalBytes: number;
+  currentPathHash?: string;
+}
+
+export interface ConflictRecord {
+  id: string;
+  originalPath: string;
+  conflictPath: string;
+  localRevision: number;
+  remoteRevision: number;
+  localHash: string;
+  remoteHash: string;
+  remoteDeviceId: string;
+  createdAt: number;
+  resolvedAt?: number;
+  resolution?: "local" | "remote" | "both" | "manual";
 }
 
 export interface SnapshotResponse {
@@ -174,5 +252,6 @@ export interface SyncSummary {
   conflicts: number;
   skipped: number;
   restartRequired: boolean;
+	restartPaths: string[];
   renamed: number;
 }

@@ -1,110 +1,148 @@
 [CmdletBinding()]
 param(
-    [string]$ServerUrl = "http://127.0.0.1:8787",
-    [string]$Token = "",
-    [string]$TokenFile = ""
+    [string]$PublicUrl = "http://127.0.0.1:8787",
+    [string]$AdminUrl = "http://127.0.0.1:8788",
+    [string]$AdminToken = "",
+    [string]$AdminTokenFile = (Join-Path $PSScriptRoot "../runtime-data/secrets/admin-token.txt")
 )
 
 $ErrorActionPreference = "Stop"
-if (-not $Token -and $TokenFile) {
-    $Token = (Get-Content -LiteralPath $TokenFile -Raw).Trim()
+$PublicUrl = $PublicUrl.TrimEnd("/")
+$AdminUrl = $AdminUrl.TrimEnd("/")
+if (-not $AdminToken) {
+    if (-not (Test-Path -LiteralPath $AdminTokenFile -PathType Leaf)) {
+        throw "Admin token file not found. Pass -AdminTokenFile or -AdminToken."
+    }
+    $AdminToken = (Get-Content -LiteralPath $AdminTokenFile -Raw).Trim()
 }
-if (-not $Token) { throw "Pass -Token or -TokenFile" }
-$ServerUrl = $ServerUrl.TrimEnd("/")
+if ($AdminToken.Length -lt 32) { throw "Admin token is unexpectedly short" }
+
+function Get-Sha256([byte[]]$Bytes) {
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try { return -join ($hasher.ComputeHash($Bytes) | ForEach-Object { $_.ToString("x2") }) }
+    finally { $hasher.Dispose() }
+}
+
+function New-MutationHeaders([string]$Token, [long]$BaseRevision, [string]$Hash = "") {
+    $headers = @{
+        Authorization = "Bearer $Token"
+        "X-Operation-ID" = [Guid]::NewGuid().ToString()
+        "X-Base-Revision" = $BaseRevision.ToString()
+        "X-Modified-At" = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString()
+    }
+    if ($Hash) { $headers["X-Content-SHA256"] = $Hash }
+    return $headers
+}
+
+function Assert-Unauthorized([scriptblock]$Request) {
+    try {
+        & $Request | Out-Null
+        throw "Expected HTTP 401"
+    } catch {
+        $status = $_.Exception.Response.StatusCode.value__
+        if ($status -ne 401) { throw }
+    }
+}
+
+$adminHeaders = @{ Authorization = "Bearer $AdminToken" }
 $vaultId = "smoke-$([Guid]::NewGuid().ToString('N').Substring(0, 12))"
-$path = "folder/smoke-note.md"
-$data = [System.Text.UTF8Encoding]::new($false).GetBytes("sync smoke test")
-$hasher = [Security.Cryptography.SHA256]::Create()
+$vaultBase = "$PublicUrl/api/v1/vaults/$vaultId"
+$deviceToken = ""
+$rotatedToken = ""
+$downloadTarget = [IO.Path]::GetTempFileName()
+
 try {
-    $sha = -join ($hasher.ComputeHash($data) | ForEach-Object { $_.ToString("x2") })
+    $health = Invoke-RestMethod -Uri "$PublicUrl/healthz"
+    if ($health.status -ne "ok") { throw "Public health check failed" }
+    $adminHealth = Invoke-RestMethod -Uri "$AdminUrl/healthz"
+    if ($adminHealth.status -ne "ok") { throw "Admin health check failed" }
+
+    $vaultBody = @{ id = $vaultId; display_name = "Automated smoke test"; quota_bytes = 0; max_files = 0 } | ConvertTo-Json -Compress
+    Invoke-RestMethod -Method Post -Uri "$AdminUrl/admin/v1/vaults" -Headers $adminHeaders -ContentType "application/json" -Body $vaultBody | Out-Null
+    $pairingBody = @{ ttl_seconds = 300; scopes = "sync:read,sync:write,history:read,restore:write" } | ConvertTo-Json -Compress
+    $pairing = Invoke-RestMethod -Method Post -Uri "$AdminUrl/admin/v1/vaults/$vaultId/pairing-codes" -Headers $adminHeaders -ContentType "application/json" -Body $pairingBody
+
+    $pairBody = @{ vault_id = $vaultId; code = $pairing.code; device_name = "PowerShell smoke test"; platform = "windows"; client_version = "1.0.0" } | ConvertTo-Json -Compress
+    $paired = Invoke-RestMethod -Method Post -Uri "$PublicUrl/api/v1/pair" -ContentType "application/json" -Body $pairBody
+    $deviceToken = $paired.token
+    if (-not $deviceToken -or -not $paired.device.id) { throw "Pairing did not return a credential and server-assigned device ID" }
+    $auth = @{ Authorization = "Bearer $deviceToken" }
+
+    $serverInfo = Invoke-RestMethod -Uri "$PublicUrl/api/v1/server-info" -Headers $auth
+    $required = @("snapshot", "idempotent-operations", "chunk-transfer", "rename", "batch-delete", "device-ack", "history", "restore", "scoped-credentials")
+    if ($serverInfo.protocol.version -ne 1 -or @($required | Where-Object { $serverInfo.capabilities -notcontains $_ }).Count -ne 0) {
+        throw "Server does not expose the final Sync Tunnel 1.0 protocol"
+    }
+
+    $path = "folder/smoke-note.md"
+    $data = [Text.UTF8Encoding]::new($false).GetBytes("sync tunnel 1.0 smoke test")
+    $hash = Get-Sha256 $data
+    $putHeaders = New-MutationHeaders $deviceToken 0 $hash
+    $encodedPath = [Uri]::EscapeDataString($path)
+    $put = Invoke-RestMethod -Method Put -Uri "$vaultBase/files/content?path=$encodedPath" -Headers $putHeaders -ContentType "application/octet-stream" -Body $data
+    if (-not $put.changed) { throw "Whole-file upload did not create a revision" }
+    $retry = Invoke-RestMethod -Method Put -Uri "$vaultBase/files/content?path=$encodedPath" -Headers $putHeaders -ContentType "application/octet-stream" -Body $data
+    if ($retry.change.revision -ne $put.change.revision) { throw "Idempotent mutation retry returned a different revision" }
+    $operation = Invoke-RestMethod -Uri "$vaultBase/operations/$($putHeaders['X-Operation-ID'])" -Headers $auth
+    if ($operation.change.revision -ne $put.change.revision) { throw "Operation lookup failed" }
+
+    $snapshot = Invoke-RestMethod -Uri "$vaultBase/snapshot?limit=10" -Headers $auth
+    if ($snapshot.files.Count -ne 1 -or $snapshot.files[0].path -ne $path) { throw "Snapshot did not contain the uploaded file" }
+    Invoke-WebRequest -Uri "$vaultBase/blobs/$hash" -Headers $auth -OutFile $downloadTarget | Out-Null
+    if ((Get-FileHash -LiteralPath $downloadTarget -Algorithm SHA256).Hash.ToLowerInvariant() -ne $hash) { throw "Blob download hash mismatch" }
+
+    $chunkPath = "folder/chunk-note.md"
+    $missingBody = @{ hashes = @($hash) } | ConvertTo-Json -Compress
+    $missing = Invoke-RestMethod -Method Post -Uri "$vaultBase/chunks/missing" -Headers $auth -ContentType "application/json" -Body $missingBody
+    if (@($missing.missing).Count -ne 1) { throw "Chunk was not reported missing" }
+    Invoke-RestMethod -Method Put -Uri "$vaultBase/chunks/$hash" -Headers $auth -ContentType "application/octet-stream" -Body $data | Out-Null
+    $commitHeaders = New-MutationHeaders $deviceToken 0 $hash
+    $manifestBody = @{ size = $data.Length; chunks = @(@{ hash = $hash; size = $data.Length }) } | ConvertTo-Json -Compress -Depth 4
+    $commit = Invoke-RestMethod -Method Post -Uri "$vaultBase/files/commit?path=$([Uri]::EscapeDataString($chunkPath))" -Headers $commitHeaders -ContentType "application/json" -Body $manifestBody
+    if (-not $commit.changed) { throw "Chunk manifest commit failed" }
+    $manifest = Invoke-RestMethod -Uri "$vaultBase/manifests/$hash" -Headers $auth
+    if ($manifest.size -ne $data.Length -or @($manifest.chunks).Count -ne 1) { throw "Chunk manifest lookup failed" }
+
+    $renamedPath = "folder/chunk-note-renamed.md"
+    $renameHeaders = New-MutationHeaders $deviceToken $commit.change.revision
+    $renameBody = @{ from = $chunkPath; to = $renamedPath } | ConvertTo-Json -Compress
+    $rename = Invoke-RestMethod -Method Post -Uri "$vaultBase/rename" -Headers $renameHeaders -ContentType "application/json" -Body $renameBody
+    if (-not $rename.changed -or $rename.change.path -ne $renamedPath -or -not $rename.related_changes[0].deleted) { throw "Atomic rename failed" }
+
+    $history = Invoke-RestMethod -Uri "$vaultBase/history?path=$encodedPath&limit=10" -Headers $auth
+    if (@($history.versions).Count -ne 1) { throw "History lookup failed" }
+    $deleteBody = @{ items = @(
+        @{ path = $path; base_revision = $put.change.revision; modified_at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() },
+        @{ path = $renamedPath; base_revision = $rename.change.revision; modified_at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+    ) } | ConvertTo-Json -Compress -Depth 4
+    $deleteHeaders = @{ Authorization = "Bearer $deviceToken"; "X-Operation-ID" = [Guid]::NewGuid().ToString() }
+    $deleted = Invoke-RestMethod -Method Post -Uri "$vaultBase/batch/delete" -Headers $deleteHeaders -ContentType "application/json" -Body $deleteBody
+    if (-not $deleted.changed -or @($deleted.changes).Count -ne 2) { throw "Batch delete failed" }
+
+    $deletedOriginal = @($deleted.changes | Where-Object { $_.path -eq $path })[0]
+    $restoreHeaders = New-MutationHeaders $deviceToken $deletedOriginal.revision
+    $restoreBody = @{ path = $path; source_revision = $put.change.revision } | ConvertTo-Json -Compress
+    $restored = Invoke-RestMethod -Method Post -Uri "$vaultBase/restore" -Headers $restoreHeaders -ContentType "application/json" -Body $restoreBody
+    if ($restored.change.restored_from_revision -ne $put.change.revision -or $restored.change.deleted) { throw "History restore failed" }
+
+    $ackBody = @{ revision = $restored.change.revision } | ConvertTo-Json -Compress
+    Invoke-RestMethod -Method Post -Uri "$vaultBase/ack" -Headers $auth -ContentType "application/json" -Body $ackBody | Out-Null
+    $rotated = Invoke-RestMethod -Method Post -Uri "$vaultBase/credential/rotate" -Headers $auth
+    $rotatedToken = $rotated.token
+    Assert-Unauthorized { Invoke-RestMethod -Uri "$vaultBase/status" -Headers $auth }
+    $rotatedAuth = @{ Authorization = "Bearer $rotatedToken" }
+    Invoke-RestMethod -Uri "$vaultBase/status" -Headers $rotatedAuth | Out-Null
+
+    $statusBody = @{ status = "revoked" } | ConvertTo-Json -Compress
+    Invoke-RestMethod -Method Post -Uri "$AdminUrl/admin/v1/vaults/$vaultId/devices/$($paired.device.id)/status" -Headers $adminHeaders -ContentType "application/json" -Body $statusBody | Out-Null
+    Assert-Unauthorized { Invoke-RestMethod -Uri "$vaultBase/status" -Headers $rotatedAuth }
+
+    $doctor = Invoke-RestMethod -Uri "$AdminUrl/admin/v1/doctor" -Headers $adminHeaders
+    if (-not $doctor.ok) { throw "Server doctor reported a problem" }
+    Write-Host "FINAL_PROTOCOL_SMOKE_PASS vault=$vaultId"
 } finally {
-    $hasher.Dispose()
+    if (Test-Path -LiteralPath $downloadTarget) { Remove-Item -LiteralPath $downloadTarget -Force }
+    $deviceToken = ""
+    $rotatedToken = ""
+    $AdminToken = ""
 }
-$headers = @{
-    Authorization = "Bearer $Token"
-    "X-Device-ID" = "smoke-device"
-    "X-Operation-ID" = [Guid]::NewGuid().ToString()
-    "X-Base-Revision" = "0"
-    "X-Modified-At" = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString()
-    "X-Content-SHA256" = $sha
-}
-$encodedPath = [Uri]::EscapeDataString($path)
-$base = "$ServerUrl/api/v1/vaults/$vaultId"
-
-$health = Invoke-RestMethod -Uri "$ServerUrl/healthz"
-if ($health.status -ne "ok") { throw "Health check failed" }
-$serverInfo = Invoke-RestMethod -Uri "$ServerUrl/api/v2/server-info" -Headers @{ Authorization = "Bearer $Token" }
-if ($serverInfo.protocol.max -lt 2 -or $serverInfo.capabilities -notcontains "snapshot-v1" -or
-    $serverInfo.capabilities -notcontains "operation-id" -or $serverInfo.capabilities -notcontains "chunk-upload-v1" -or
-    $serverInfo.capabilities -notcontains "rename-v1" -or $serverInfo.capabilities -notcontains "batch-delete-v1") {
-    throw "Server does not advertise the required Protocol v2 capabilities"
-}
-$put = Invoke-RestMethod -Method Put -Uri "$base/file?path=$encodedPath" -Headers $headers -ContentType "application/octet-stream" -Body $data
-if (-not $put.changed) { throw "Initial upload did not create a change" }
-$page = Invoke-RestMethod -Uri "$base/changes?after=0&limit=10" -Headers @{ Authorization = "Bearer $Token" }
-if ($page.changes.Count -ne 1) { throw "Expected one change, got $($page.changes.Count)" }
-$snapshot = Invoke-RestMethod -Uri "$ServerUrl/api/v2/vaults/$vaultId/snapshot?limit=10" -Headers @{ Authorization = "Bearer $Token" }
-if ($snapshot.snapshot_revision -ne $put.change.revision -or $snapshot.files.Count -ne 1 -or $snapshot.files[0].path -ne $path) {
-    throw "Protocol v2 snapshot did not return the uploaded file"
-}
-$download = Invoke-WebRequest -Uri "$base/blobs/$sha" -Headers @{ Authorization = "Bearer $Token" }
-$downloaded = $download.Content
-if ($downloaded -is [string]) { $downloaded = [System.Text.Encoding]::UTF8.GetBytes($downloaded) }
-$hasher = [Security.Cryptography.SHA256]::Create()
-try {
-    $downloadSha = -join ($hasher.ComputeHash([byte[]]$downloaded) | ForEach-Object { $_.ToString("x2") })
-} finally {
-    $hasher.Dispose()
-}
-if ($downloadSha -ne $sha) { throw "Downloaded blob hash mismatch" }
-
-$chunkPath = "folder/chunk-note.md"
-$chunkMissingBody = @{ hashes = @($sha) } | ConvertTo-Json -Compress
-$chunkApi = "$ServerUrl/api/v2/vaults/$vaultId/chunks"
-$missingBefore = Invoke-RestMethod -Method Post -Uri "$chunkApi/missing" -Headers @{ Authorization = "Bearer $Token" } -ContentType "application/json" -Body $chunkMissingBody
-if (@($missingBefore.missing).Count -ne 1) { throw "Chunk was not reported missing before upload" }
-Invoke-RestMethod -Method Put -Uri "$chunkApi/$sha" -Headers @{ Authorization = "Bearer $Token" } -ContentType "application/octet-stream" -Body $data | Out-Null
-$missingAfter = Invoke-RestMethod -Method Post -Uri "$chunkApi/missing" -Headers @{ Authorization = "Bearer $Token" } -ContentType "application/json" -Body $chunkMissingBody
-if (@($missingAfter.missing).Count -ne 0) { throw "Uploaded Chunk is still reported missing" }
-$chunkHeaders = @{
-    Authorization = "Bearer $Token"
-    "X-Device-ID" = "smoke-device"
-    "X-Operation-ID" = [Guid]::NewGuid().ToString()
-    "X-Base-Revision" = "0"
-    "X-Modified-At" = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString()
-    "X-Content-SHA256" = $sha
-}
-$manifestBody = @{ size = $data.Length; chunks = @(@{ hash = $sha; size = $data.Length }) } | ConvertTo-Json -Compress -Depth 4
-$chunkCommit = Invoke-RestMethod -Method Post -Uri "$ServerUrl/api/v2/vaults/$vaultId/files/commit?path=$([Uri]::EscapeDataString($chunkPath))" -Headers $chunkHeaders -ContentType "application/json" -Body $manifestBody
-if (-not $chunkCommit.changed) { throw "Chunk Manifest commit did not create a change" }
-$manifest = Invoke-RestMethod -Uri "$ServerUrl/api/v2/vaults/$vaultId/manifests/$sha" -Headers @{ Authorization = "Bearer $Token" }
-if ($manifest.size -ne $data.Length -or @($manifest.chunks).Count -ne 1) { throw "Stored Chunk Manifest is invalid" }
-$renamedPath = "folder/chunk-note-renamed.md"
-$renameHeaders = @{
-    Authorization = "Bearer $Token"
-    "X-Device-ID" = "smoke-device"
-    "X-Operation-ID" = [Guid]::NewGuid().ToString()
-    "X-Base-Revision" = $chunkCommit.change.revision.ToString()
-    "X-Modified-At" = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString()
-}
-$renameBody = @{ from = $chunkPath; to = $renamedPath } | ConvertTo-Json -Compress
-$rename = Invoke-RestMethod -Method Post -Uri "$ServerUrl/api/v2/vaults/$vaultId/rename" -Headers $renameHeaders -ContentType "application/json" -Body $renameBody
-if (-not $rename.changed -or $rename.change.path -ne $renamedPath -or @($rename.related_changes).Count -ne 1 -or -not $rename.related_changes[0].deleted) {
-    throw "Atomic rename did not return destination and source tombstone"
-}
-
-$deleteHeaders = @{
-    Authorization = "Bearer $Token"
-    "X-Device-ID" = "smoke-device"
-    "X-Operation-ID" = [Guid]::NewGuid().ToString()
-}
-$deleteTime = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-$batchDeleteBody = @{ items = @(
-    @{ path = $path; base_revision = $put.change.revision; modified_at = $deleteTime },
-    @{ path = $renamedPath; base_revision = $rename.change.revision; modified_at = $deleteTime }
-) } | ConvertTo-Json -Compress -Depth 4
-$deleted = Invoke-RestMethod -Method Post -Uri "$ServerUrl/api/v2/vaults/$vaultId/batch/delete" -Headers $deleteHeaders -ContentType "application/json" -Body $batchDeleteBody
-if (-not $deleted.changed -or @($deleted.changes).Count -ne 2 -or @($deleted.changes | Where-Object { -not $_.deleted }).Count -ne 0) {
-    throw "Batch delete tombstones failed"
-}
-Write-Host "Smoke test passed for temporary vault $vaultId"

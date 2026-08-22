@@ -1,11 +1,10 @@
 import { requestUrl, RequestUrlParam, RequestUrlResponse } from "obsidian";
 
-import { BatchDeleteItem, BatchMutationResponse, Change, ChangesResponse, ChunkRef, MutationResponse, ServerInfoResponse, SnapshotResponse, StatusResponse } from "./types";
+import { BatchDeleteItem, BatchMutationResponse, Change, ChangesResponse, ChunkRef, HistoryPage, MutationResponse, PairResponse, ServerInfoResponse, SnapshotResponse, StatusResponse, VaultInfo } from "./types";
 
-interface ClientOptions {
+export interface ClientOptions {
   serverUrl: string;
   vaultId: string;
-  deviceId: string;
   token: string;
   accessClientId?: string;
   accessClientSecret?: string;
@@ -44,7 +43,7 @@ export class SyncApiClient {
 
   async serverInfo(): Promise<ServerInfoResponse> {
     return this.jsonRequest<ServerInfoResponse>({
-      url: `${this.baseUrl}/api/v2/server-info`,
+      url: `${this.baseUrl}/api/v1/server-info`,
       method: "GET"
     });
   }
@@ -54,7 +53,7 @@ export class SyncApiClient {
     if (at !== undefined) query.set("at", String(at));
     if (after) query.set("after", after);
     return this.jsonRequest<SnapshotResponse>({
-      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/snapshot?${query.toString()}`,
+      url: `${this.vaultUrl()}/snapshot?${query.toString()}`,
       method: "GET"
     });
   }
@@ -69,9 +68,8 @@ export class SyncApiClient {
   async findOperation(operationId: string): Promise<MutationResponse | null> {
     try {
       return await this.jsonRequest<MutationResponse>({
-        url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/operations/${encodeURIComponent(operationId)}`,
-        method: "GET",
-        headers: { "X-Device-ID": this.options.deviceId }
+		url: `${this.vaultUrl()}/operations/${encodeURIComponent(operationId)}`,
+		method: "GET"
       });
     } catch (error) {
       if (error instanceof ApiError && error.status === 404 && error.code === "not_found") return null;
@@ -81,7 +79,7 @@ export class SyncApiClient {
 
   async missingChunks(hashes: string[]): Promise<string[]> {
     const response = await this.jsonRequest<{ missing: string[] }>({
-      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/chunks/missing`,
+      url: `${this.vaultUrl()}/chunks/missing`,
       method: "POST",
       contentType: "application/json",
       body: JSON.stringify({ hashes })
@@ -91,7 +89,7 @@ export class SyncApiClient {
 
   async putChunk(hash: string, data: ArrayBuffer): Promise<void> {
     await this.jsonRequest<{ changed: boolean }>({
-      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/chunks/${encodeURIComponent(hash)}`,
+      url: `${this.vaultUrl()}/chunks/${encodeURIComponent(hash)}`,
       method: "PUT",
       contentType: "application/octet-stream",
       body: data
@@ -108,7 +106,7 @@ export class SyncApiClient {
     operationId: string
   ): Promise<MutationResponse> {
     return this.jsonRequest<MutationResponse>({
-      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/files/commit?path=${encodeURIComponent(path)}`,
+      url: `${this.vaultUrl()}/files/commit?path=${encodeURIComponent(path)}`,
       method: "POST",
       contentType: "application/json",
       headers: this.mutationHeaders(operationId, baseRevision, modifiedAt, { "X-Content-SHA256": hash }),
@@ -118,7 +116,7 @@ export class SyncApiClient {
 
   async renameFile(from: string, to: string, baseRevision: number, modifiedAt: number, operationId: string): Promise<MutationResponse> {
     return this.jsonRequest<MutationResponse>({
-      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/rename`,
+      url: `${this.vaultUrl()}/rename`,
       method: "POST",
       contentType: "application/json",
       headers: this.mutationHeaders(operationId, baseRevision, modifiedAt),
@@ -128,20 +126,17 @@ export class SyncApiClient {
 
   async deleteFiles(items: BatchDeleteItem[], operationId: string): Promise<BatchMutationResponse> {
     return this.jsonRequest<BatchMutationResponse>({
-      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/batch/delete`,
+	  url: `${this.vaultUrl()}/batch/delete`,
       method: "POST",
       contentType: "application/json",
-      headers: {
-        "X-Device-ID": this.options.deviceId,
-        "X-Operation-ID": operationId
-      },
+	  headers: { "X-Operation-ID": operationId },
       body: JSON.stringify({ items })
     });
   }
 
   async downloadChunk(hash: string): Promise<ArrayBuffer> {
     const response = await this.request({
-      url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/chunks/${encodeURIComponent(hash)}`,
+      url: `${this.vaultUrl()}/chunks/${encodeURIComponent(hash)}`,
       method: "GET"
     });
     return response.arrayBuffer;
@@ -150,7 +145,7 @@ export class SyncApiClient {
   async findManifest(hash: string): Promise<{ size: number; chunks: ChunkRef[] } | null> {
     try {
       return await this.jsonRequest<{ size: number; chunks: ChunkRef[] }>({
-        url: `${this.baseUrl}/api/v2/vaults/${encodeURIComponent(this.options.vaultId)}/manifests/${encodeURIComponent(hash)}`,
+        url: `${this.vaultUrl()}/manifests/${encodeURIComponent(hash)}`,
         method: "GET"
       });
     } catch (error) {
@@ -161,7 +156,7 @@ export class SyncApiClient {
 
   async putFile(path: string, baseRevision: number, modifiedAt: number, hash: string, data: ArrayBuffer, operationId: string = crypto.randomUUID()): Promise<MutationResponse> {
     return this.jsonRequest<MutationResponse>({
-      url: `${this.vaultUrl()}/file?path=${encodeURIComponent(path)}`,
+      url: `${this.vaultUrl()}/files/content?path=${encodeURIComponent(path)}`,
       method: "PUT",
       contentType: "application/octet-stream",
       headers: this.mutationHeaders(operationId, baseRevision, modifiedAt, { "X-Content-SHA256": hash }),
@@ -171,7 +166,7 @@ export class SyncApiClient {
 
   async deleteFile(path: string, baseRevision: number, modifiedAt: number, operationId: string = crypto.randomUUID()): Promise<MutationResponse> {
     return this.jsonRequest<MutationResponse>({
-      url: `${this.vaultUrl()}/file?path=${encodeURIComponent(path)}`,
+      url: `${this.vaultUrl()}/files/content?path=${encodeURIComponent(path)}`,
       method: "DELETE",
       headers: this.mutationHeaders(operationId, baseRevision, modifiedAt)
     });
@@ -185,13 +180,50 @@ export class SyncApiClient {
     return response.arrayBuffer;
   }
 
+  async vaultInfo(): Promise<VaultInfo> {
+	return this.jsonRequest<VaultInfo>({ url: this.vaultUrl(), method: "GET" });
+  }
+
+  async acknowledge(revision: number): Promise<void> {
+	await this.request({
+	  url: `${this.vaultUrl()}/ack`, method: "POST", contentType: "application/json",
+	  body: JSON.stringify({ revision })
+	});
+  }
+
+  async rotateCredential(): Promise<string> {
+	const response = await this.jsonRequest<{ token: string }>({ url: `${this.vaultUrl()}/credential/rotate`, method: "POST" });
+	return response.token;
+  }
+
+  async history(path = "", before = 0, limit = 50, deletedOnly = false): Promise<HistoryPage> {
+	const query = new URLSearchParams({ limit: String(limit), deleted: String(deletedOnly) });
+	if (path) query.set("path", path);
+	if (before > 0) query.set("before", String(before));
+	return this.jsonRequest<HistoryPage>({ url: `${this.vaultUrl()}/history?${query.toString()}`, method: "GET" });
+  }
+
+  async restore(path: string, sourceRevision: number, baseRevision: number, operationId = crypto.randomUUID()): Promise<MutationResponse> {
+	return this.jsonRequest<MutationResponse>({
+	  url: `${this.vaultUrl()}/restore`, method: "POST", contentType: "application/json",
+	  headers: this.mutationHeaders(operationId, baseRevision, Date.now()),
+	  body: JSON.stringify({ path, source_revision: sourceRevision })
+	});
+  }
+
+  async pairDevice(code: string, deviceName: string, platform: string, clientVersion: string): Promise<PairResponse> {
+	return this.jsonRequest<PairResponse>({
+	  url: `${this.baseUrl}/api/v1/pair`, method: "POST", contentType: "application/json",
+	  body: JSON.stringify({ vault_id: this.options.vaultId, code, device_name: deviceName, platform, client_version: clientVersion })
+	}, false);
+  }
+
   private vaultUrl(): string {
     return `${this.baseUrl}/api/v1/vaults/${encodeURIComponent(this.options.vaultId)}`;
   }
 
   private mutationHeaders(operationId: string, baseRevision: number, modifiedAt: number, extra: Record<string, string> = {}): Record<string, string> {
     return {
-      "X-Device-ID": this.options.deviceId,
       "X-Operation-ID": operationId,
       "X-Base-Revision": String(baseRevision),
       "X-Modified-At": String(modifiedAt),
@@ -199,11 +231,9 @@ export class SyncApiClient {
     };
   }
 
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${this.options.token}`,
-      ...extra
-    };
+  private headers(extra: Record<string, string> = {}, authenticated = true): Record<string, string> {
+	const headers: Record<string, string> = { ...extra };
+	if (authenticated) headers.Authorization = `Bearer ${this.options.token}`;
     if (this.options.accessClientId && this.options.accessClientSecret) {
       headers["CF-Access-Client-Id"] = this.options.accessClientId;
       headers["CF-Access-Client-Secret"] = this.options.accessClientSecret;
@@ -211,8 +241,8 @@ export class SyncApiClient {
     return headers;
   }
 
-  private async jsonRequest<T>(parameters: RequestUrlParam): Promise<T> {
-    const response = await this.request(parameters);
+  private async jsonRequest<T>(parameters: RequestUrlParam, authenticated = true): Promise<T> {
+    const response = await this.request(parameters, authenticated);
     try {
       return response.json as T;
     } catch {
@@ -220,13 +250,13 @@ export class SyncApiClient {
     }
   }
 
-  private async request(parameters: RequestUrlParam): Promise<RequestUrlResponse> {
+  private async request(parameters: RequestUrlParam, authenticated = true): Promise<RequestUrlResponse> {
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         const response = await requestUrl({
           ...parameters,
-          headers: this.headers(parameters.headers),
+          headers: this.headers(parameters.headers, authenticated),
           throw: false
         });
         if (response.status >= 200 && response.status < 300) return response;

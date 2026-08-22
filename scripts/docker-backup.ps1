@@ -1,78 +1,52 @@
 [CmdletBinding()]
-param(
-    [string]$DestinationDirectory = ""
-)
+param([ValidateRange(0, 3650)] [int]$KeepLast = 0)
 
 $ErrorActionPreference = "Stop"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-if (-not $DestinationDirectory) {
-    $documents = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
-    $DestinationDirectory = Join-Path $documents "ObsidianSyncBackups"
-}
-$DestinationDirectory = [System.IO.Path]::GetFullPath($DestinationDirectory)
 
 Push-Location $repoRoot
 try {
     $composeJsonText = (& docker compose config --format json) -join "`n"
     if ($LASTEXITCODE -ne 0) { throw "Could not resolve Compose configuration" }
     $composeConfig = $composeJsonText | ConvertFrom-Json
-    $dataMount = $composeConfig.services."sync-server".volumes | Where-Object { $_.target -eq "/data" } | Select-Object -First 1
-    if (-not $dataMount -or -not $dataMount.source) { throw "Compose /data bind mount was not found" }
-    $dataDirectory = [System.IO.Path]::GetFullPath([string]$dataMount.source)
-    $databasePath = Join-Path $dataDirectory "sync.db"
-    if (-not (Test-Path -LiteralPath $databasePath -PathType Leaf)) { throw "Database not found: $databasePath" }
+    $service = $composeConfig.services."sync-server"
+    $backupMount = $service.volumes | Where-Object { $_.target -eq "/backups" } | Select-Object -First 1
+    if (-not $backupMount -or -not $backupMount.source) { throw "Compose /backups bind mount was not found" }
+    $backupRoot = [System.IO.Path]::GetFullPath([string]$backupMount.source)
+    $adminSecretName = @($service.secrets)[0].source
+    $secret = $composeConfig.secrets.$adminSecretName
+    if (-not $secret.file) { throw "Admin token secret source was not found" }
+    $adminToken = [System.IO.File]::ReadAllText([string]$secret.file).Trim()
+    if ($adminToken.Length -lt 32) { throw "Admin token is invalid" }
 
-    $dataPrefix = $dataDirectory.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-    $destinationPrefix = $DestinationDirectory.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-    if ($DestinationDirectory -eq $dataDirectory -or $destinationPrefix.StartsWith($dataPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Backup destination must be outside the Compose data directory: $dataDirectory"
-    }
-
-    $containerId = (& docker compose ps --quiet sync-server).Trim()
-    $wasRunning = $false
-    if ($containerId) {
-        $wasRunning = ((& docker inspect --format "{{.State.Running}}" $containerId).Trim() -eq "true")
-    }
+    $adminPort = 8788
+    $adminBinding = $service.ports | Where-Object { $_.target -eq 8788 } | Select-Object -First 1
+    if ($adminBinding -and $adminBinding.published) { $adminPort = [int]$adminBinding.published }
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $containerDestination = "/backups/$stamp"
+    $headers = @{ Authorization = "Bearer $adminToken" }
+    $body = @{ destination = $containerDestination } | ConvertTo-Json -Compress
     try {
-        if ($wasRunning) {
-            & docker compose stop --timeout 20 sync-server
-            if ($LASTEXITCODE -ne 0) { throw "Could not stop sync-server for backup" }
-        }
-
-        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-        $backupPath = Join-Path $DestinationDirectory $stamp
-        if (Test-Path -LiteralPath $backupPath) { throw "Backup destination already exists: $backupPath" }
-        New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
-        $backupData = Join-Path $backupPath "data"
-        New-Item -ItemType Directory -Path $backupData -Force | Out-Null
-        Get-ChildItem -LiteralPath $dataDirectory -Force | ForEach-Object {
-            Copy-Item -LiteralPath $_.FullName -Destination $backupData -Recurse -Force
-        }
-        $backupDatabase = Join-Path $backupData "sync.db"
-        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $backupDatabase).Hash.ToLowerInvariant()
-        $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $databasePath).Hash.ToLowerInvariant()
-        if ($hash -ne $sourceHash) { throw "Backup database hash does not match its source" }
-        $backupFiles = @(Get-ChildItem -LiteralPath $backupData -File -Recurse -Force)
-        $metadata = [ordered]@{
-            format_version = 2
-            created_at = (Get-Date).ToUniversalTime().ToString("o")
-            source = $databasePath
-            sha256 = $hash
-            file_count = $backupFiles.Count
-            total_bytes = ($backupFiles | Measure-Object -Property Length -Sum).Sum
-            includes_token = $false
-            deployment = "docker-compose-bind-mount"
-        }
-        [System.IO.File]::WriteAllText((Join-Path $backupPath "backup.json"), ($metadata | ConvertTo-Json), [System.Text.UTF8Encoding]::new($false))
+        $null = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$adminPort/admin/v1/backups" -Headers $headers -ContentType "application/json" -Body $body
     } finally {
-        if ($wasRunning) {
-            & docker compose up --detach --no-build sync-server
-            if ($LASTEXITCODE -ne 0) { Write-Warning "Backup succeeded, but sync-server could not be restarted automatically" }
-        }
+        $adminToken = $null
+        $headers = $null
     }
+    & docker compose exec --no-TTY sync-server /app/obsidian-sync-server verify-backup --directory $containerDestination | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Backup was created but verification failed" }
+    $hostDestination = Join-Path $backupRoot $stamp
+    Write-Host "Verified online backup created: $hostDestination"
+	if ($KeepLast -gt 0) {
+		$rootPrefix = $backupRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+		$expired = @(Get-ChildItem -LiteralPath $backupRoot -Directory | Where-Object { $_.Name -match '^\d{8}-\d{6}$' -and (Test-Path -LiteralPath (Join-Path $_.FullName 'backup.json') -PathType Leaf) } | Sort-Object Name -Descending | Select-Object -Skip $KeepLast)
+		foreach ($item in $expired) {
+			$resolved = [System.IO.Path]::GetFullPath($item.FullName)
+			if (-not $resolved.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Refusing to prune outside backup root: $resolved" }
+			Remove-Item -LiteralPath $resolved -Recurse -Force
+			Write-Host "Pruned expired verified backup: $resolved"
+		}
+	}
+    Write-Warning "The backup contains plaintext Vault content. Replicate it to encrypted storage on another device."
 } finally {
     Pop-Location
 }
-
-Write-Host "Consistent /data backup created: $backupPath"
-Write-Warning "The backup contains plaintext vault content. Copy it to encrypted storage on another device."

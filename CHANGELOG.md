@@ -1,59 +1,39 @@
 # Changelog
 
-All notable changes to Sync Tunnel are documented here. The project follows Semantic Versioning once a change is published.
+All notable changes to Sync Tunnel are documented here. Semantic Versioning compatibility starts with the stable `1.0.0` release.
 
-## Unreleased
+## 1.0.0-rc.1 - 2026-08-19
 
-### Added
+### Breaking
 
-- Persistent, deduplicated Vault file-event queue with a two-second automatic-sync debounce.
-- Client scan cache keyed by path, size, and modification time, plus hourly metadata scans and daily integrity rehashing.
-- Transactional operation-ID records for retrying whole-file uploads and deletions without allocating duplicate revisions.
-- Persistent client outbox with post-restart operation-result lookup and safe replay of uncommitted mutations.
-- Persistent download inbox with size and SHA-256 verification, same-directory temporary files, backup-based replacement, and restart recovery.
-- Fixed-size content-addressed Chunk storage, missing-Chunk queries, Manifest commits, and capability-negotiated Chunk upload/download.
-- Transactional high-confidence rename operation with source tombstone, destination change, and post-restart result recovery.
-- Desktop Chunk downloads stream directly to the temporary file and use incremental SHA-256 verification.
-- Atomic batch deletion for up to 100 paths with consecutive tombstone revisions and all-or-nothing conflict handling.
+- Replaced all pre-1.0 protocol drafts with one final `/api/v1` protocol.
+- Removed global sync tokens, client-supplied device IDs, legacy capability names, and protocol downgrade paths.
+- Pre-1.0 plugin state is intentionally reset; every device must pair again and explicitly approve its first synchronization.
+- Renamed the file limit configuration to `max_file_bytes`, `--max-file-bytes`, and `OBSIDIAN_SYNC_MAX_FILE_BYTES`.
 
-### Changed
+### Server
 
-- Ordinary unchanged synchronization reuses cached hashes instead of reading every file body.
-- Incremental deletion propagation is limited to paths observed by the event queue; periodic full scans remain the safety net.
-- Whole-file clients attach a UUID operation ID; servers remain compatible with clients that omit it.
-- A client with pending outbox entries refuses to write through a downgraded server that cannot prove operation results.
-- Sync Tunnel temporary download and backup files are always excluded from Vault synchronization.
-- Chunked Manifest commits keep the whole-file download path compatible during the 0.3 migration window.
-- Rename events fall back to upload plus delete unless the old baseline and new content hash prove identity.
+- Added logical Vault administration, one-time pairing, server-assigned device identities, scoped per-device credentials, rotation, revocation, retirement, and audit events.
+- Added stable snapshots, persistent idempotent operations, whole-file and Chunk/Manifest transfers, atomic rename and batch delete, and per-device ACK watermarks.
+- Added version history, deletion recovery, restore-as-new-revision, deterministic two-phase GC, quotas, file limits, rate limits, and disk reserve protection.
+- Added independent loopback-only Admin API, online SQLite/Chunk backups, SHA-256 manifests, verification, safe restore, doctor, and statistics.
 
-### Fixed
+### Plugin
 
-- Load desktop filesystem and crypto modules through Obsidian's `window.require` bridge, preventing `app://` CORS failures during verified downloads and streamed Chunk transfers.
+- Added setup wizard, safer default profile, SecretStorage device credentials, protocol enforcement, Activity history, progress, pause/cancel boundaries, and exact restart-path notices.
+- Added persistent outbox/inbox restart recovery, desktop streamed large-file I/O, mobile file limits, conflict center with text comparison and four resolution choices, history browser, restore, credential rotation, and sanitized diagnostics.
+- Added Chinese/English UI selection and explicit protection for Sync Tunnel's own state, temporary files, caches, logs, and workspace state.
+
+### Delivery and quality
+
+- Added deterministic multi-device state-machine tests, opt-in 10,000-file tests, final API client tests, corruption tests, and an isolated end-to-end smoke self-test.
+- Added Windows CI, Ubuntu race detection, Nightly scale/image builds, CodeQL, Dependabot, multi-architecture GHCR releases, checksums, SBOM, provenance, and keyless Cosign image signing.
+- Reworked Docker Desktop deployment to use separate public/admin loopback ports, Windows bind-mounted data/backups, and a local Admin Token secret.
 
 ## 0.2.0 - 2026-08-16
 
-### Added
+Historical pre-1.0 MVP with the Protocol v2 draft, initial snapshot reconciliation, first-sync preview, profiles, schema migration foundation, unit tests, restart notices, and cross-platform path-collision detection. It is not protocol-compatible with 1.0.
 
-- Product roadmap, Protocol v2 draft, threat model, and release test strategy.
-- Versioned SQLite schema migration foundation.
-- Authenticated `/api/v2/server-info` capability discovery endpoint.
-- Stable, revision-bound Vault snapshot API with path pagination.
-- Client snapshot reconciliation when synchronization filters change.
-- Explicit first-sync preview with safe merge, remote-authoritative, and local-authoritative modes.
-- Notes-only, recommended-safe, full-Vault, and custom synchronization profiles.
-- Plugin unit tests, in-memory Vault tests, and first synchronization-engine state tests.
-- Connection test for Tunnel, Access, API token, Vault ID, and server protocol compatibility.
-- Immediate settings refresh after first-sync completion, removing the stale preview action.
-- Restart notice when synchronized plugins, themes, snippets, or community-plugin state changes.
-- Cross-platform case and Unicode path-collision detection.
+## 0.1.0
 
-### Changed
-
-- Sync Tunnel's current and legacy plugin directories are now fully device-local and never synchronized.
-- Existing 0.1 installations keep their initialized state; new installations require explicit first-sync confirmation.
-- New installations default to the recommended-safe profile; existing 0.1 installations retain full-Vault behavior.
-
-### Security
-
-- Prevent one device from replacing another device's running Sync Tunnel bundle through Vault synchronization.
-- Preserve an untracked local file as a conflict copy before a snapshot applies different remote content.
+Initial Go/SQLite and Obsidian plugin MVP. It is not protocol-compatible with 1.0.
