@@ -24,9 +24,12 @@ There is exactly one final `/api/v1` protocol. All 0.x clients, global API token
 - [Upgrade from 0.x](docs/UPGRADE_TO_1.0.en.md)
 - [Manual acceptance](docs/MANUAL_ACCEPTANCE_1.0.en.md)
 - [Release checklist](docs/RELEASE_CHECKLIST_1.0.en.md)
+- [Unofficial GitHub/BRAT plugin distribution (Chinese)](docs/GITHUB_RELEASE.zh-CN.md)
 - [Chinese Docker operations](docs/DOCKER_DEPLOYMENT.zh-CN.md)
 - [Chinese automated test evidence](docs/AUTOMATED_TESTS_1.0.zh-CN.md)
 - [Threat model](docs/THREAT_MODEL.zh-CN.md)
+
+Only the unofficial Obsidian plugin is distributed through GitHub Releases/BRAT. The project does not publish server binaries or container images; build the server locally from the repository Dockerfile at the same immutable Tag as the plugin.
 
 ## Developer gate
 

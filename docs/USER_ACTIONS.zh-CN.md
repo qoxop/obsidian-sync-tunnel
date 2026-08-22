@@ -40,9 +40,9 @@
 - [ ] 审查本次 diff，决定 commit/push；
 - [ ] 启用分支保护、CodeQL、Dependabot、Secret scanning/push protection；
 - [ ] 启用 Private Vulnerability Reporting；
-- [ ] 确认 Actions/GHCR 权限；
+- [ ] 确认 Actions 仅需创建 GitHub Release 的权限，不授予 Packages 或 OIDC 发布权限；
 - [ ] 人工验收通过后创建 annotated RC/Stable Tag；
-- [ ] 在 Release、GHCR、SBOM、checksum、attestation 和 Cosign 签名页面核验产物；
+- [ ] 在 Release 页面核验三个插件附件、checksum 和插件 SBOM；
 - [ ] 用 BRAT 从 GitHub Release 安装，而非把本地代码复制到其他设备。
 
 ## 备份与安全判断

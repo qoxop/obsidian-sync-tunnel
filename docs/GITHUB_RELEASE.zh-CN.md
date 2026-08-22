@@ -1,6 +1,6 @@
-# GitHub、GHCR 与 BRAT 分发
+# GitHub 与 BRAT 非官方插件分发
 
-项目无需进入 Obsidian 官方市场。GitHub 保存源码和 Release，GHCR 保存多架构服务镜像，BRAT 从 GitHub Release 在线安装插件。
+项目不进入 Obsidian 官方社区插件市场。GitHub 保存源码和插件 Release，BRAT 从 GitHub Release 在线安装或更新插件。服务端不发布预构建可执行文件或容器镜像；用户从同一版本 Tag 获取源码，并用仓库中的 `Dockerfile`/Compose 在本机构建。
 
 ## 版本与兼容
 
@@ -21,13 +21,13 @@ Set-Location ..
 node .\scripts\verify-plugin-release.mjs 1.0.0-rc.1 --artifacts
 ```
 
-发布工作流附件：`main.js`、`manifest.json`、`styles.css`、`SHA256SUMS.txt`、`plugin-sbom.cdx.json`。同时构建 `linux/amd64`/`linux/arm64` GHCR image，附 provenance/SBOM 并对 digest 做 Cosign keyless 签名。
+发布工作流只生成插件附件：`main.js`、`manifest.json`、`styles.css`、`SHA256SUMS.txt` 和 `plugin-sbom.cdx.json`。它不会发布服务端二进制、Docker/OCI 镜像、`latest` 标签或任何运行数据。
 
 ## 创建 Release
 
-先完成[发布清单](RELEASE_CHECKLIST_1.0.zh-CN.md)和人工验收。管理员执行 commit/push/tag；Tag 推送触发 `.github/workflows/release-plugin.yml`。RC 不更新 GHCR `latest`，stable 才更新。
+先完成[发布清单](RELEASE_CHECKLIST_1.0.zh-CN.md)和人工验收。管理员提交并推送同步后的版本文件，再创建不可移动的 annotated Tag。Tag 推送触发 `.github/workflows/release-plugin.yml`；带连字符的版本自动标记为 Pre-release。
 
-失败的工作流应修复代码并增加新版本，不能手工拼出与 Tag 源码不一致的 Release，也不要强制移动旧 Tag。
+失败的工作流应修复代码并增加新版本，不能手工拼出与 Tag 源码不一致的 Release，也不能强制移动旧 Tag。
 
 ## BRAT 安装
 
@@ -36,29 +36,31 @@ node .\scripts\verify-plugin-release.mjs 1.0.0-rc.1 --artifacts
 1. 安装并启用 BRAT；
 2. Settings > BRAT > Add Beta plugin；
 3. 输入 `https://github.com/qoxop/obsidian-sync-tunnel`；
-4. RC 测试选择/固定目标 prerelease，Stable 用户跟随正式 Release；
+4. RC 测试选择或固定目标 prerelease，稳定用户跟随正式 Release；
 5. 启用 Sync Tunnel，使用管理端为这台设备新生成的一次性配对码；
 6. 完成首次预览并手动同步两次。
 
-BRAT 只安装插件程序，不复制配置、凭据或客户端状态。找不到版本时检查仓库是否公开、Release 是否存在、三个附件是否独立上传、Tag 是否与 manifest 一致，以及 BRAT 是否允许 prerelease。
+BRAT 只安装插件程序，不复制配置、凭据或客户端状态。找不到版本时检查仓库是否公开、Release 是否存在、三个插件附件是否独立上传、Tag 是否与 manifest 一致，以及 BRAT 是否允许 prerelease。
 
-## GHCR 部署
+## 服务端从源码构建
 
-RC：
+在服务器电脑检出与插件完全相同的 Tag，然后本地构建：
 
 ```powershell
-docker pull ghcr.io/qoxop/obsidian-sync-tunnel:1.0.0-rc.1
+git clone --branch 1.0.0-rc.1 --depth 1 https://github.com/qoxop/obsidian-sync-tunnel.git
+Set-Location .\obsidian-sync-tunnel
+docker build --pull --build-arg VERSION=1.0.0-rc.1 -t obsidian-sync-tunnel:1.0.0-rc.1 .
+docker run --rm obsidian-sync-tunnel:1.0.0-rc.1 version
 ```
 
-正式版可固定 `1.0.0`；生产环境不建议只写 `latest`，因为固定版本更容易审计和回滚。Compose 的默认本地 build 保留，若改用 GHCR image，应删除/禁用 build 并明确 image Tag，同时保持宿主机 bind mount 和两个回环端口不变。
+输出版本正确后，再按 [Docker Desktop 部署指引](DOCKER_DEPLOYMENT.zh-CN.md)初始化本地数据目录、密钥和 Compose。不要使用来源不明的第三方镜像；服务端升级和回滚都应重新检出明确 Tag 并使用该 Tag 的 Dockerfile 构建。
 
-## 产物验证
+## 插件产物验证
 
 ```powershell
 Get-FileHash .\main.js -Algorithm SHA256
 Get-FileHash .\manifest.json -Algorithm SHA256
 Get-FileHash .\styles.css -Algorithm SHA256
-docker buildx imagetools inspect ghcr.io/qoxop/obsidian-sync-tunnel:1.0.0-rc.1
 ```
 
-checksum 应与 Release `SHA256SUMS.txt` 一致。GitHub Attestations 页面验证构建来源；Cosign 验证时限定 GitHub Actions issuer 和仓库 workflow identity，不能只看到“有签名”就信任任意身份。
+三个哈希必须与 Release 中的 `SHA256SUMS.txt` 一致；`plugin-sbom.cdx.json` 必须是可解析的 CycloneDX JSON。插件 Release 不包含 Token、Vault 数据、SQLite、服务端配置或备份。

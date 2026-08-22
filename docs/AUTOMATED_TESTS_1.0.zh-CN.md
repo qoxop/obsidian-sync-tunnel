@@ -81,9 +81,10 @@ go test .\internal\store -run '^TestScaleTenThousandFiles$' -count=1 -v
 - Windows CI：Go tests/vet、插件测试/类型/构建、Release metadata；
 - Ubuntu race job：`go test -race ./... -count=1`。本地 Windows 若为 `CGO_ENABLED=0`，race 命令不可用；
 - Docker job：macOS 脚本 `bash -n` 和镜像构建；
-- Nightly：插件构建、GHCR nightly 镜像和 10,000 文件测试；
 - CodeQL：Go 与 JavaScript/TypeScript；
 - Dependabot：Go、npm、GitHub Actions 和 Docker 依赖更新。
+
+项目不运行定时 Nightly，也不在 CI 中推送服务端镜像。10,000 文件规模测试按需在本地显式执行；常规 CI 仍执行一次不推送的 Dockerfile 构建，防止本地部署链路退化。
 
 ## 2026-08-19 本机基线
 

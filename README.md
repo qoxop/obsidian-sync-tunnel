@@ -31,10 +31,12 @@
 - [自动化测试与复现命令](docs/AUTOMATED_TESTS_1.0.zh-CN.md)
 - [1.0 人工验收清单](docs/MANUAL_ACCEPTANCE_1.0.zh-CN.md)
 - [1.0 RC 发布清单](docs/RELEASE_CHECKLIST_1.0.zh-CN.md)
-- [GitHub、GHCR 与 BRAT 发布](docs/GITHUB_RELEASE.zh-CN.md)
+- [GitHub 与 BRAT 非官方插件发布](docs/GITHUB_RELEASE.zh-CN.md)
 - [威胁模型](docs/THREAT_MODEL.zh-CN.md)
 
 旧 0.x 设计和验收文档只作为历史记录，不能用于配置 1.0。
+
+项目只通过 GitHub Release/BRAT 分发非官方 Obsidian 插件，不发布服务端二进制或容器镜像。服务端应从与插件相同的不可移动 Tag 检出源码，并使用仓库内的 `Dockerfile`/Compose 在本机构建。
 
 ## 开发者快速验证
 

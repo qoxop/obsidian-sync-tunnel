@@ -276,7 +276,7 @@ Cloudflare Tunnel 仍是独立的 `cloudflared` Windows 服务，Origin 为 `htt
 - 文件扫描缓存和有限并发哈希，提高大型 Vault 性能；
 - 服务端速率限制、指标与结构化审计事件；
 - 网络故障、进程崩溃和磁盘写满的故障注入测试；
-- Docker 镜像签名、SBOM 和自动化版本回滚；
+- 服务端同名 Tag 本地 Docker 构建、校验和版本回滚演练；
 
 ### 阶段 C：产品化
 
@@ -284,7 +284,7 @@ Cloudflare Tunnel 仍是独立的 `cloudflared` Windows 服务，Origin 为 `htt
 - 实时通知或长轮询，减少定时扫描延迟；
 - Markdown 三方合并，同时保留原始冲突副本；
 - 多 Vault 管理、配额和管理 CLI；
-- 插件签名发布、版本兼容矩阵和自动更新流程。
+- 非官方插件 Release、版本兼容矩阵和 BRAT 更新流程。
 
 ## 11. 已知风险与处理
 

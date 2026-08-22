@@ -11,14 +11,14 @@
 
 - Protect main, require CI/CodeQL, disallow force pushes.
 - Enable Dependabot alerts, secret scanning/push protection and Private Vulnerability Reporting.
-- Allow the repository Actions token to create Releases and write GHCR packages.
+- Allow the repository Actions token to create Releases.
 - Never store Cloudflare, Admin/device credentials or real Vault data in Actions.
 
 ## RC publication
 
-After manual approval, commit the synchronized `1.0.0-rc.1` manifest/package/versions files, push main, create an annotated `1.0.0-rc.1` tag, and push the tag. The workflow publishes the three plugin assets, checksums, CycloneDX SBOM, a prerelease, multi-architecture GHCR image, provenance/SBOM and keyless Cosign signature. RC must not update `latest`.
+After manual approval, commit the synchronized `1.0.0-rc.1` manifest/package/versions files, push main, create an annotated `1.0.0-rc.1` tag, and push the tag. The workflow publishes only the three unofficial plugin assets, checksums, CycloneDX SBOM and a prerelease. It does not publish server binaries or container images.
 
-Verify the release flag, asset hashes, BRAT installation, GHCR amd64/arm64 manifests, GitHub attestation and Cosign workflow identity. Run manual acceptance using downloaded Release assets and the GHCR image, not local build output.
+Verify the release flag, asset hashes and BRAT installation. Run manual acceptance using downloaded plugin assets and a server built locally from the Dockerfile at the same immutable Tag.
 
 ## Stable gate
 

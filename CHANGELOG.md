@@ -2,6 +2,13 @@
 
 All notable changes to Sync Tunnel are documented here. Semantic Versioning compatibility starts with the stable `1.0.0` release.
 
+## Unreleased
+
+### Delivery
+
+- Limited public distribution to the unofficial Obsidian plugin through GitHub Releases and BRAT.
+- Removed GHCR, multi-architecture image publication, Cosign signing, and the scheduled Nightly workflow. The server remains source-distributed and is built locally from the Dockerfile/Compose files at the same immutable Tag as the plugin.
+
 ## 1.0.0-rc.1 - 2026-08-19
 
 ### Breaking
@@ -27,7 +34,7 @@ All notable changes to Sync Tunnel are documented here. Semantic Versioning comp
 ### Delivery and quality
 
 - Added deterministic multi-device state-machine tests, opt-in 10,000-file tests, final API client tests, corruption tests, and an isolated end-to-end smoke self-test.
-- Added Windows CI, Ubuntu race detection, Nightly scale/image builds, CodeQL, Dependabot, multi-architecture GHCR releases, checksums, SBOM, provenance, and keyless Cosign image signing.
+- Added Windows CI, Ubuntu race detection, CodeQL, Dependabot, plugin checksums and a CycloneDX plugin SBOM. The initial server-image publication job was cancelled and is not part of the supported distribution model.
 - Reworked Docker Desktop deployment to use separate public/admin loopback ports, Windows bind-mounted data/backups, and a local Admin Token secret.
 
 ## 0.2.0 - 2026-08-16
