@@ -9,12 +9,12 @@ import (
 )
 
 func (a *AdminAPI) listLogs(w http.ResponseWriter, r *http.Request) {
-	limit, err := parseIntQuery(r, "limit", 200)
+	limit, err := parseLimitQuery(r, "limit", 200)
 	if err != nil || limit < 1 || limit > 1000 {
 		writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and 1000")
 		return
 	}
-	entries, err := readJSONLogTail(a.logPath, int(limit))
+	entries, err := readJSONLogTail(a.logPath, limit)
 	if err != nil {
 		writeStoreError(w, err)
 		return

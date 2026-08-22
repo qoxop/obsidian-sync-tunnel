@@ -4,6 +4,12 @@ All notable changes to Sync Tunnel are documented here. Semantic Versioning comp
 
 ## Unreleased
 
+### Security
+
+- Removed client-supplied filesystem paths from the online backup API. The server now creates backups only under its managed backup root and verifies them by opaque backup ID.
+- Parameterized SQLite `VACUUM INTO`, rejected out-of-root Chunk paths during doctor checks, and made query-limit parsing safe on every Go architecture.
+- Required TLS 1.2 or newer for public connectivity probes and added regression coverage for redirect and DNS-rebinding rejection.
+
 ## 1.0.0-rc.2 - 2026-08-22
 
 ### Administration

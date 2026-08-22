@@ -152,12 +152,12 @@ func (a *API) changes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_cursor", err.Error())
 		return
 	}
-	limit64, err := parseIntQuery(r, "limit", 250)
+	limit, err := parseLimitQuery(r, "limit", 250)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_limit", err.Error())
 		return
 	}
-	changes, hasMore, err := a.store.ListChanges(r.Context(), r.PathValue("vault"), after, int(limit64))
+	changes, hasMore, err := a.store.ListChanges(r.Context(), r.PathValue("vault"), after, limit)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -183,13 +183,13 @@ func (a *API) snapshot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	limit64, err := parseIntQuery(r, "limit", 250)
+	limit, err := parseLimitQuery(r, "limit", 250)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_limit", err.Error())
 		return
 	}
 	after := r.URL.Query().Get("after")
-	files, hasMore, err := a.store.ListSnapshot(r.Context(), r.PathValue("vault"), at, after, int(limit64))
+	files, hasMore, err := a.store.ListSnapshot(r.Context(), r.PathValue("vault"), at, after, limit)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -289,12 +289,12 @@ func (a *API) history(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_cursor", "before must be a non-negative revision")
 		return
 	}
-	limit, err := parseIntQuery(r, "limit", 50)
+	limit, err := parseLimitQuery(r, "limit", 50)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_limit", "limit is invalid")
 		return
 	}
-	page, err := a.store.ListHistory(r.Context(), r.PathValue("vault"), r.URL.Query().Get("path"), before, int(limit), r.URL.Query().Get("deleted") == "true")
+	page, err := a.store.ListHistory(r.Context(), r.PathValue("vault"), r.URL.Query().Get("path"), before, limit, r.URL.Query().Get("deleted") == "true")
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -475,6 +475,14 @@ func parseIntQuery(r *http.Request, key string, fallback int64) (int64, error) {
 		return fallback, nil
 	}
 	return strconv.ParseInt(value, 10, 64)
+}
+
+func parseLimitQuery(r *http.Request, key string, fallback int) (int, error) {
+	value := r.URL.Query().Get(key)
+	if value == "" {
+		return fallback, nil
+	}
+	return strconv.Atoi(value)
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {

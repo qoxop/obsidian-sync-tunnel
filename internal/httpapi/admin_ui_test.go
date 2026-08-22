@@ -106,10 +106,6 @@ func TestManagedBackupLifecycle(t *testing.T) {
 		t.Fatalf("unexpected backup result: %+v", result)
 	}
 
-	verified := serve(admin, request(http.MethodPost, "/admin/v1/backups/verify", map[string]string{"destination": result.Destination}))
-	if verified.Code != http.StatusOK {
-		t.Fatalf("verify backup=%d %s", verified.Code, verified.Body)
-	}
 	listed := serve(admin, request(http.MethodGet, "/admin/v1/backups", nil))
 	var listResult struct {
 		Backups []store.BackupRun `json:"backups"`
@@ -118,9 +114,13 @@ func TestManagedBackupLifecycle(t *testing.T) {
 	if listed.Code != http.StatusOK || len(listResult.Backups) != 1 || listResult.Backups[0].Destination != result.Destination {
 		t.Fatalf("list backups=%d %s", listed.Code, listed.Body)
 	}
-	outside := serve(admin, request(http.MethodPost, "/admin/v1/backups/verify", map[string]string{"destination": filepath.Join(root, "outside")}))
-	if outside.Code != http.StatusBadRequest {
-		t.Fatalf("outside backup path=%d %s", outside.Code, outside.Body)
+	verified := serve(admin, request(http.MethodPost, "/admin/v1/backups/"+listResult.Backups[0].ID+"/verify", nil))
+	if verified.Code != http.StatusOK {
+		t.Fatalf("verify backup=%d %s", verified.Code, verified.Body)
+	}
+	unknown := serve(admin, request(http.MethodPost, "/admin/v1/backups/unknown/verify", nil))
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("unknown backup=%d %s", unknown.Code, unknown.Body)
 	}
 }
 

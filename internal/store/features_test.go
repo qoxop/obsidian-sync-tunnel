@@ -210,6 +210,28 @@ func TestDoctorDetectsMissingAndCorruptChunks(t *testing.T) {
 	}
 }
 
+func TestDoctorRejectsChunkPathsOutsideBlobDirectory(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := openTestStore(t)
+	data := []byte("do not read outside the blob directory")
+	hash := Hash(data)
+	if _, err := db.PutChunk(ctx, hash, data); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.ExecContext(ctx, `UPDATE chunks SET relative_path=? WHERE hash=?`, "../../outside", hash); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := db.Doctor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OK || len(report.CorruptChunkHashes) != 1 || report.CorruptChunkHashes[0] != hash {
+		t.Fatalf("doctor report=%+v", report)
+	}
+}
+
 func isResourceError(err error, code string) bool {
 	var target *ResourceLimitError
 	return errors.As(err, &target) && target.Code == code

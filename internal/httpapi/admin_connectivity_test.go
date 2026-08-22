@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -93,6 +94,21 @@ func TestResolveSafePublicHostRejectsUnsafeAddresses(t *testing.T) {
 	addresses, err := resolveSafePublicHost(context.Background(), resolver, "sync.example.com")
 	if err != nil || len(addresses) != 1 {
 		t.Fatalf("public address rejected: addresses=%v err=%v", addresses, err)
+	}
+}
+
+func TestSafePublicHTTPClientRejectsDNSRebindingAndRedirects(t *testing.T) {
+	t.Parallel()
+	client := safePublicHTTPClient(staticIPResolver{addresses: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}})
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport.Proxy != nil || transport.DialContext == nil {
+		t.Fatal("public probe transport is not isolated from environment proxies")
+	}
+	if _, err := transport.DialContext(context.Background(), "tcp", "sync.example.com:443"); err == nil || !strings.Contains(err.Error(), "已拒绝探测") {
+		t.Fatalf("DNS rebinding target was not rejected: %v", err)
+	}
+	if err := client.CheckRedirect(httptest.NewRequest(http.MethodGet, "https://other.example.com/healthz", nil), nil); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("redirect policy=%v", err)
 	}
 }
 

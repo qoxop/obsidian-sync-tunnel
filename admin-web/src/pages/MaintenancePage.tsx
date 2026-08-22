@@ -26,8 +26,8 @@ export function MaintenancePage({ api }: { api: AdminAPI }) {
     void messageAPI.success(`备份已创建：${pathName(result.destination)}`);
     await load();
   };
-  const verify = async (destination: string) => {
-    await api.verifyBackup(destination);
+  const verify = async (id: string) => {
+    await api.verifyBackup(id);
     void messageAPI.success("备份文件集、哈希与 SQLite 完整性均通过");
   };
   const createPlan = async () => {
@@ -72,7 +72,7 @@ export function MaintenancePage({ api }: { api: AdminAPI }) {
         { title: "备份", dataIndex: "destination", render: (value: string) => <><Typography.Text strong>{pathName(value)}</Typography.Text><br/><Typography.Text type="secondary" ellipsis={{ tooltip: value }}>{value}</Typography.Text></> },
         { title: "状态", dataIndex: "status", render: (value: string) => <Tag color={value === "completed" ? "green" : value === "failed" ? "red" : "blue"}>{value}</Tag> },
         { title: "完成时间", dataIndex: "completed_at", render: formatTime },
-        { title: "操作", render: (_: unknown, row: BackupRun) => <Button size="small" icon={<CheckCircleOutlined />} disabled={row.status !== "completed"} onClick={() => void verify(row.destination)}>校验</Button> }
+        { title: "操作", render: (_: unknown, row: BackupRun) => <Button size="small" icon={<CheckCircleOutlined />} disabled={row.status !== "completed"} onClick={() => void verify(row.id)}>校验</Button> }
       ]} />
     </Card>
   </>;

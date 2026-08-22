@@ -104,14 +104,11 @@ export class AdminAPI {
   }
 
   createBackup(): Promise<BackupResult> {
-    return this.request("/backups", { method: "POST", body: "{}" });
+    return this.request("/backups", { method: "POST" });
   }
 
-  verifyBackup(destination: string): Promise<BackupResult> {
-    return this.request("/backups/verify", {
-      method: "POST",
-      body: JSON.stringify({ destination })
-    });
+  verifyBackup(id: string): Promise<BackupResult> {
+    return this.request(`/backups/${encodeURIComponent(id)}/verify`, { method: "POST" });
   }
 
   checkConnectivity(input: { public_url: string; access_client_id?: string; access_client_secret?: string }): Promise<ConnectivityReport> {

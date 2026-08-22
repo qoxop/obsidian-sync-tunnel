@@ -72,6 +72,14 @@ func TestPairingAuthenticationScopeAndRevocation(t *testing.T) {
 	}
 }
 
+func TestParseLimitQueryRejectsIntegerOverflow(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodGet, "/?limit=9223372036854775808", nil)
+	if _, err := parseLimitQuery(request, "limit", 50); err == nil {
+		t.Fatal("overflowing limit was accepted")
+	}
+}
+
 func TestWholeFileOperationsSnapshotAckHistoryAndRestore(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t, 1024, 1000)

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -276,6 +277,7 @@ func safePublicHTTPClient(resolver ipResolver) *http.Client {
 	transport := &http.Transport{
 		Proxy:                 nil,
 		ForceAttemptHTTP2:     true,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 8 * time.Second,
 		IdleConnTimeout:       30 * time.Second,

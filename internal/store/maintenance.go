@@ -397,8 +397,9 @@ func (s *Store) Doctor(ctx context.Context) (DoctorReport, error) {
 		report.OK = false
 	}
 	type chunkTarget struct {
-		hash string
-		path string
+		hash       string
+		path       string
+		unsafePath bool
 	}
 	targets := make([]chunkTarget, 0)
 	known := make(map[string]bool)
@@ -413,6 +414,10 @@ func (s *Store) Doctor(ctx context.Context) (DoctorReport, error) {
 			return DoctorReport{}, err
 		}
 		path := filepath.Clean(filepath.Join(s.blobDir, filepath.FromSlash(relative)))
+		if path == filepath.Clean(s.blobDir) || !pathWithin(path, s.blobDir) {
+			targets = append(targets, chunkTarget{hash: hash, unsafePath: true})
+			continue
+		}
 		known[path] = true
 		targets = append(targets, chunkTarget{hash: hash, path: path})
 	}
@@ -439,6 +444,10 @@ func (s *Store) Doctor(ctx context.Context) (DoctorReport, error) {
 			go func() {
 				defer group.Done()
 				for index := range jobs {
+					if targets[index].unsafePath {
+						results[index].corrupt = true
+						continue
+					}
 					actual, hashErr := hashFile(targets[index].path)
 					if errors.Is(hashErr, os.ErrNotExist) {
 						results[index].missing = true
@@ -528,8 +537,7 @@ func (s *Store) Backup(ctx context.Context, destination string) (BackupManifest,
 		return BackupManifest{}, err
 	}
 	dbTarget := filepath.Join(abs, "sync.db")
-	quoted := strings.ReplaceAll(dbTarget, "'", "''")
-	if _, err := s.db.ExecContext(ctx, `VACUUM INTO '`+quoted+`'`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, dbTarget); err != nil {
 		return BackupManifest{}, fmt.Errorf("create SQLite snapshot: %w", err)
 	}
 	if err := copyTree(s.blobDir, filepath.Join(abs, "blobs")); err != nil {
@@ -588,6 +596,16 @@ func (s *Store) ListBackupRuns(ctx context.Context, limit int) ([]BackupRun, err
 		result = append(result, run)
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) VerifyBackupRun(ctx context.Context, id string) (string, BackupManifest, error) {
+	var destination string
+	err := s.db.QueryRowContext(ctx, `SELECT destination FROM backup_runs WHERE id=? AND status='completed'`, id).Scan(&destination)
+	if err != nil {
+		return "", BackupManifest{}, err
+	}
+	manifest, err := VerifyBackup(destination)
+	return destination, manifest, err
 }
 
 func VerifyBackup(directory string) (BackupManifest, error) {

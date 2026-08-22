@@ -57,7 +57,7 @@ func NewAdmin(db *store.Store, token string, options AdminOptions, logger *slog.
 	mux.Handle("GET /admin/v1/doctor", api.auth(http.HandlerFunc(api.doctor)))
 	mux.Handle("GET /admin/v1/backups", api.auth(http.HandlerFunc(api.listBackups)))
 	mux.Handle("POST /admin/v1/backups", api.auth(http.HandlerFunc(api.backup)))
-	mux.Handle("POST /admin/v1/backups/verify", api.auth(http.HandlerFunc(api.verifyBackup)))
+	mux.Handle("POST /admin/v1/backups/{backup}/verify", api.auth(http.HandlerFunc(api.verifyBackup)))
 	mux.Handle("GET /admin/v1/logs", api.auth(http.HandlerFunc(api.listLogs)))
 	mux.Handle("GET /admin/v1/stats", api.auth(http.HandlerFunc(api.stats)))
 	mux.Handle("POST /admin/v1/connectivity/check", api.auth(http.HandlerFunc(api.checkConnectivity)))
@@ -244,12 +244,12 @@ func (a *AdminAPI) setDeviceStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *AdminAPI) listAudit(w http.ResponseWriter, r *http.Request) {
-	limit, err := parseIntQuery(r, "limit", 100)
+	limit, err := parseLimitQuery(r, "limit", 100)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_limit", "limit is invalid")
 		return
 	}
-	events, err := a.store.ListAudit(r.Context(), int(limit))
+	events, err := a.store.ListAudit(r.Context(), limit)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -309,15 +309,9 @@ func (a *AdminAPI) doctor(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *AdminAPI) backup(w http.ResponseWriter, r *http.Request) {
-	var request struct {
-		Destination string `json:"destination"`
-	}
-	if !decodeAdminJSON(w, r, &request) {
-		return
-	}
-	destination, err := a.resolveBackupDestination(request.Destination, true)
+	destination, err := a.newBackupDestination()
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_backup_destination", err.Error())
+		writeError(w, http.StatusInternalServerError, "backup_destination_failed", err.Error())
 		return
 	}
 	manifest, err := a.store.Backup(r.Context(), destination)
