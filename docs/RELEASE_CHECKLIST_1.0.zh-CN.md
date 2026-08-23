@@ -11,7 +11,7 @@
 - [ ] 插件 `npm ci`、typecheck、test、build；
 - [ ] 10,000 文件显式测试；
 - [ ] Docker build 和 Compose config；
-- [ ] `node scripts/verify-plugin-release.mjs 1.0.0-rc.2 --artifacts`；
+- [ ] `node scripts/verify-plugin-release.mjs 1.0.0-rc.3 --artifacts`；
 - [ ] CI、Ubuntu race、CodeQL 和 Dependabot 无阻塞项；
 - [ ] Changelog、README、架构、协议、部署、测试、威胁模型和人工验收文档与代码一致。
 
@@ -28,15 +28,15 @@
 先检查差异，不复用或覆盖 Tag：
 
 ```powershell
-node .\scripts\set-plugin-version.mjs 1.0.0-rc.2
-node .\scripts\verify-plugin-release.mjs 1.0.0-rc.2 --artifacts
+node .\scripts\set-plugin-version.mjs 1.0.0-rc.3
+node .\scripts\verify-plugin-release.mjs 1.0.0-rc.3 --artifacts
 git diff --check
 git status --short
 # 精确暂存上面审查过的文件，不使用整仓库暂存命令
-git commit -m "Prepare Sync Tunnel 1.0.0-rc.2"
+git commit -m "Prepare Sync Tunnel 1.0.0-rc.3"
 git push origin main
-git tag -a 1.0.0-rc.2 -m "Sync Tunnel 1.0.0-rc.2"
-git push origin 1.0.0-rc.2
+git tag -a 1.0.0-rc.3 -m "Sync Tunnel 1.0.0-rc.3"
+git push origin 1.0.0-rc.3
 ```
 
 推 Tag 会自动：

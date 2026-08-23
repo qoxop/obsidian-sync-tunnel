@@ -32,7 +32,7 @@
 
 ```json
 {
-  "server_version": "1.0.0-rc.2",
+  "server_version": "1.0.0-rc.3",
   "protocol": { "version": 1 },
   "capabilities": [
     "snapshot", "idempotent-operations", "whole-file", "chunk-transfer",

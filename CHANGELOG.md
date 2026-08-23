@@ -4,6 +4,8 @@ All notable changes to Sync Tunnel are documented here. Semantic Versioning comp
 
 ## Unreleased
 
+## 1.0.0-rc.3 - 2026-08-23
+
 ### Security
 
 - Removed client-supplied filesystem paths from the online backup API. The server now creates backups only under its managed backup root and verifies them by opaque backup ID.
