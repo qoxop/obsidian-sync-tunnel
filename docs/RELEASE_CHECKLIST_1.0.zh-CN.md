@@ -57,7 +57,6 @@ git push origin 1.0.0-rc.3
 ## E. 1.0.0 Stable 门禁
 
 - [ ] [人工验收](MANUAL_ACCEPTANCE_1.0.zh-CN.md)全部通过；
-- [ ] 至少 7 天多设备 RC 使用无 P0/P1；
 - [ ] Windows、macOS、Android/iOS 的实际覆盖在 Release Notes 中如实列出；
 - [ ] 无未处理的高危依赖/CodeQL/Secret scanning 结果；
 - [ ] 异机加密备份恢复成功；

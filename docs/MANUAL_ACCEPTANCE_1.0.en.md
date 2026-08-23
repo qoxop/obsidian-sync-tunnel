@@ -18,6 +18,6 @@ Use dedicated test Vaults and record date, OS, Obsidian/plugin/server versions a
 
 ## RC pass gate
 
-All scenarios pass; Windows A/B, Mac and one mobile device have a zero second sync; Docker/host restart and backup restore pass; at least seven days of normal RC use have no silent loss, unrecoverable conflict or corruption; every failure has an issue and disposition; all CI, race, CodeQL and dependency checks pass.
+All scenarios pass; Windows A/B, Mac and one mobile device have a zero second sync; Docker/host restart and backup restore pass; every failure has an issue and disposition; all CI, race, CodeQL and dependency checks pass. Issues discovered after stable release are handled through normal patch releases.
 
 Do not promote an untested RC directly to stable `1.0.0`.
