@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -95,5 +96,12 @@ func TestDoctorHandlerCachesSuccessfulReport(t *testing.T) {
 	}
 	if !bytes.Equal(first.Body.Bytes(), second.Body.Bytes()) {
 		t.Fatalf("cached doctor response changed: first=%s second=%s", first.Body, second.Body)
+	}
+	var report store.DoctorReport
+	if err := json.Unmarshal(first.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.MissingChunkHashes == nil || report.CorruptChunkHashes == nil || report.OrphanChunkFiles == nil {
+		t.Fatalf("doctor arrays must be encoded as [] instead of null: %s", first.Body)
 	}
 }

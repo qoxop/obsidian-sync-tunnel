@@ -4,6 +4,12 @@ All notable changes to Sync Tunnel are documented here. Semantic Versioning comp
 
 ## Unreleased
 
+### Reliability
+
+- Record optimistic upload and resumed-upload revision conflicts in the conflict center, while preserving the local bytes before applying the remote revision.
+- Open the setup wizard after the Obsidian settings modal has settled, so “Pair again” reliably displays the wizard.
+- Encode empty doctor findings as JSON arrays and tolerate nullable maintenance results in the Web console, preventing a healthy report from blanking the dashboard or maintenance page.
+
 ## 1.0.0-rc.3 - 2026-08-23
 
 ### Security

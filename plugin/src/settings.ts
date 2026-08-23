@@ -29,7 +29,11 @@ export class SyncTunnelSettingTab extends PluginSettingTab {
 	new Setting(containerEl)
 	  .setName(tr("初始化向导", "Setup wizard"))
 	  .setDesc(tr("使用一次性配对码注册此设备；Admin Token 永远不会填写到 Obsidian。", "Register this device with a one-time pairing code. Never enter the Admin Token in Obsidian."))
-	  .addButton((button) => button.setButtonText(this.plugin.data.settings.deviceId ? tr("重新配对", "Pair again") : tr("开始设置", "Start setup")).setCta().onClick(() => this.plugin.openSetupWizard()));
+	  .addButton((button) => button.setButtonText(this.plugin.data.settings.deviceId ? tr("重新配对", "Pair again") : tr("开始设置", "Start setup")).setCta().onClick(() => {
+		// Obsidian closes the settings modal before showing a plugin modal. Opening
+		// synchronously can attach the wizard to the modal that is being removed.
+		window.setTimeout(() => this.plugin.openSetupWizard(), 0);
+	  }));
 
     new Setting(containerEl)
       .setName("Server URL")

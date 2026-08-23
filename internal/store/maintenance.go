@@ -376,7 +376,12 @@ func (s *Store) ExecuteGCPlan(ctx context.Context, planID, expectedHash string) 
 }
 
 func (s *Store) Doctor(ctx context.Context) (DoctorReport, error) {
-	report := DoctorReport{OK: true}
+	report := DoctorReport{
+		OK:                 true,
+		MissingChunkHashes: make([]string, 0),
+		CorruptChunkHashes: make([]string, 0),
+		OrphanChunkFiles:   make([]string, 0),
+	}
 	integrityDB, err := sql.Open("sqlite", s.databasePath)
 	if err != nil {
 		return DoctorReport{}, err

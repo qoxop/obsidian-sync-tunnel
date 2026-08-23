@@ -258,7 +258,13 @@ export class SyncEngine {
       } catch (error) {
         if (!(error instanceof ApiError) || error.code !== "revision_conflict" || !error.current) throw error;
         await this.discardOperation(operationID);
-		await this.preserveConflict(path, content ?? await this.adapter.readBinary(path));
+		await this.recordConflict(
+		  path,
+		  content ?? await this.adapter.readBinary(path),
+		  previous?.revision ?? 0,
+		  currentHash,
+		  error.current
+		);
         summary.conflicts += 1;
         await this.applyRemoteChange(error.current, summary, false);
       }
@@ -324,12 +330,7 @@ export class SyncEngine {
         ? !previous.deleted && currentHash !== previous.hash && currentHash !== remoteHash
         : currentHash !== remoteHash;
       if (preserveConcurrentLocal && locallyModified) {
-		const saved = await this.preserveConflict(change.path, currentData);
-		this.data.conflicts.push({
-		  id: crypto.randomUUID(), originalPath: change.path, conflictPath: saved,
-		  localRevision: previous?.revision ?? 0, remoteRevision: change.revision,
-		  localHash: currentHash, remoteHash, remoteDeviceId: change.device_id, createdAt: Date.now()
-		});
+		await this.recordConflict(change.path, currentData, previous?.revision ?? 0, currentHash, change);
         summary.conflicts += 1;
       }
       if (!change.deleted && currentHash === remoteHash) {
@@ -379,6 +380,28 @@ export class SyncEngine {
     await this.ensureParentDirectory(destination);
     await this.adapter.writeBinary(destination, content);
     return destination;
+  }
+
+  private async recordConflict(
+	originalPath: string,
+	content: ArrayBuffer,
+	localRevision: number,
+	localHash: string,
+	remote: Change
+  ): Promise<string> {
+	const saved = await this.preserveConflict(originalPath, content);
+	this.data.conflicts.push({
+	  id: crypto.randomUUID(),
+	  originalPath,
+	  conflictPath: saved,
+	  localRevision,
+	  remoteRevision: remote.revision,
+	  localHash,
+	  remoteHash: remote.deleted ? "" : remote.blob_hash ?? "",
+	  remoteDeviceId: remote.device_id,
+	  createdAt: Date.now()
+	});
+	return saved;
   }
 
   private async ensureParentDirectory(path: string): Promise<void> {
@@ -514,7 +537,13 @@ export class SyncEngine {
         } catch (error) {
           if (!(error instanceof ApiError) || error.code !== "revision_conflict" || !error.current) throw error;
           await this.discardOperation(operation.operationId);
-		  await this.preserveConflict(operation.path, content ?? await this.adapter.readBinary(operation.path));
+		  await this.recordConflict(
+			operation.path,
+			content ?? await this.adapter.readBinary(operation.path),
+			operation.baseRevision,
+			actualHash,
+			error.current
+		  );
           summary.conflicts += 1;
           await this.applyRemoteChange(error.current, summary, false);
         }

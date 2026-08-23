@@ -15,7 +15,7 @@ export function MaintenancePage({ api }: { api: AdminAPI }) {
   const [form] = Form.useForm<{ retention: number; versions: number }>();
   const load = useCallback(async () => {
     setLoading(true);
-    try { const [report, runs] = await Promise.all([api.doctor(), api.backups()]); setDoctor(report); setBackups(runs); }
+    try { const [report, runs] = await Promise.all([api.doctor(), api.backups()]); setDoctor(report); setBackups(runs ?? []); }
     catch (reason) { void messageAPI.error(reason instanceof Error ? reason.message : String(reason)); }
     finally { setLoading(false); }
   }, [api, messageAPI]);
@@ -49,7 +49,7 @@ export function MaintenancePage({ api }: { api: AdminAPI }) {
     <PageTitle title="维护与备份" description="执行完整性检查、安全垃圾回收，以及受控目录内的在线备份。" onRefresh={() => void load()} refreshing={loading} />
     <Row gutter={[16, 16]}>
       <Col xs={24} xl={12}><Card title="数据检查" extra={<SafetyCertificateOutlined />}>
-        <Alert type={doctor?.ok ? "success" : "warning"} showIcon message={doctor?.ok ? "检查通过" : "发现异常"} description={`SQLite: ${doctor?.integrity ?? "检查中"}；缺失块 ${doctor?.missing_chunk_hashes.length ?? 0}；损坏块 ${doctor?.corrupt_chunk_hashes.length ?? 0}；孤立块 ${doctor?.orphan_chunk_files.length ?? 0}`} />
+        <Alert type={doctor?.ok ? "success" : "warning"} showIcon message={doctor?.ok ? "检查通过" : "发现异常"} description={`SQLite: ${doctor?.integrity ?? "检查中"}；缺失块 ${doctor?.missing_chunk_hashes?.length ?? 0}；损坏块 ${doctor?.corrupt_chunk_hashes?.length ?? 0}；孤立块 ${doctor?.orphan_chunk_files?.length ?? 0}`} />
       </Card></Col>
       <Col xs={24} xl={12}><Card title="垃圾回收计划" extra={<DeleteOutlined />}>
         <Form form={form} layout="inline" initialValues={{ retention: 90, versions: 20 }}>
@@ -62,8 +62,8 @@ export function MaintenancePage({ api }: { api: AdminAPI }) {
     {plan && <Card className="section-card" title="待执行的回收计划" extra={<Button danger type="primary" onClick={executePlan}>执行计划</Button>}>
       <Descriptions column={{ xs: 1, sm: 2, lg: 4 }} items={[
         { key: "id", label: "计划", children: shortID(plan.id) }, { key: "bytes", label: "预计回收", children: formatBytes(plan.estimated_bytes) },
-        { key: "changes", label: "修订", children: plan.change_revisions.length }, { key: "paths", label: "已删路径", children: plan.deleted_paths.length },
-        { key: "blobs", label: "Blob", children: plan.blob_hashes.length }, { key: "chunks", label: "分块", children: plan.chunk_hashes.length }
+        { key: "changes", label: "修订", children: plan.change_revisions?.length ?? 0 }, { key: "paths", label: "已删路径", children: plan.deleted_paths?.length ?? 0 },
+        { key: "blobs", label: "Blob", children: plan.blob_hashes?.length ?? 0 }, { key: "chunks", label: "分块", children: plan.chunk_hashes?.length ?? 0 }
       ]} />
     </Card>}
     <Card className="section-card" title="托管备份" extra={<Button type="primary" icon={<CloudDownloadOutlined />} loading={loading} onClick={() => void createBackup()}>立即备份</Button>}>

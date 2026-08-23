@@ -39,7 +39,7 @@ export function DashboardPage({ api }: { api: AdminAPI }) {
     </Row>}
     <Card className="section-card" title="数据健康">
       {doctor?.ok ? <Alert type="success" showIcon icon={<CheckCircleOutlined />} message="数据库与分块文件检查正常" description={`SQLite integrity_check: ${doctor.integrity}`} /> :
-        <Alert type="warning" showIcon icon={<WarningOutlined />} message="检测到需要处理的数据问题" description={`缺失 ${doctor?.missing_chunk_hashes.length ?? 0}，损坏 ${doctor?.corrupt_chunk_hashes.length ?? 0}，孤立 ${doctor?.orphan_chunk_files.length ?? 0}`} />}
+        <Alert type="warning" showIcon icon={<WarningOutlined />} message="检测到需要处理的数据问题" description={`缺失 ${doctor?.missing_chunk_hashes?.length ?? 0}，损坏 ${doctor?.corrupt_chunk_hashes?.length ?? 0}，孤立 ${doctor?.orphan_chunk_files?.length ?? 0}`} />}
       <Typography.Paragraph className="health-note"><Tag color="blue">本机管理端</Tag>此页面不会经由 Cloudflare Tunnel 暴露。</Typography.Paragraph>
     </Card>
   </>;

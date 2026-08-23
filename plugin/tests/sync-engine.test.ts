@@ -1,7 +1,7 @@
 import type { DataAdapter, Vault } from "obsidian";
 import { describe, expect, it } from "vitest";
 
-import type { SyncApiClient } from "../src/api-client";
+import { ApiError, type SyncApiClient } from "../src/api-client";
 import { sha256 } from "../src/hash";
 import { SyncEngine } from "../src/sync-engine";
 import type { Change, PersistedData } from "../src/types";
@@ -1010,6 +1010,87 @@ describe("SyncEngine snapshot reconciliation", () => {
     expect(data.outbox).toEqual({});
     expect(data.pendingPaths).toEqual({});
     expect(summary.deletedRemote).toBe(2);
+  });
+
+  it("records an optimistic upload conflict for the conflict center", async () => {
+    const base = bytes("base");
+    const local = bytes("local concurrent edit");
+    const remote = bytes("remote concurrent edit");
+    const baseHash = await sha256(base);
+    const localHash = await sha256(local);
+    const remoteHash = await sha256(remote);
+    const files = new Map<string, ArrayBuffer>([["note.md", local]]);
+    const adapter = createMemoryAdapter(files);
+    const vault = { adapter, configDir: ".obsidian" } as unknown as Vault;
+    const scanner = new VaultScanner(vault, [], []);
+    const now = Date.now();
+    const remoteChange: Change = {
+      revision: 2,
+      path: "note.md",
+      blob_hash: remoteHash,
+      size: remote.byteLength,
+      modified_at: now + 1,
+      deleted: false,
+      device_id: "remote-device"
+    };
+    const data: PersistedData = {
+      schemaVersion: 8,
+      settings: testSettings(),
+      cursor: 1,
+      filterFingerprint: scanner.filterFingerprint(),
+      initialSyncCompleted: true,
+      pendingInitialSyncMode: null,
+      files: {
+        "note.md": { hash: baseHash, revision: 1, size: base.byteLength, modifiedAt: 1, deleted: false }
+      },
+      scanCache: {
+        "note.md": { hash: baseHash, size: base.byteLength, modifiedAt: 1 }
+      },
+      pendingPaths: { "note.md": now },
+      needsFullScan: false,
+      lastFullScanAt: now,
+      lastIntegrityScanAt: now,
+      outbox: {},
+      inbox: {},
+      pendingRenames: {},
+      paused: false,
+      activities: [],
+      conflicts: [],
+      lastAcknowledgedRevision: 1
+    };
+    const client = {
+      serverInfo: async () => finalServerInfo(),
+      status: async () => ({ latest_revision: 2, max_file_bytes: 1024 }),
+      acknowledge: async () => undefined,
+      putFile: async () => {
+        throw new ApiError("stale revision", 409, "revision_conflict", remoteChange);
+      },
+      downloadBlob: async (hash: string) => {
+        expect(hash).toBe(remoteHash);
+        return remote;
+      },
+      listChanges: async () => ({ changes: [remoteChange], cursor: 2, has_more: false }),
+      deleteFile: async () => {
+        throw new Error("Unexpected delete");
+      }
+    } as unknown as SyncApiClient;
+    const engine = new SyncEngine(vault, data, client, scanner, async () => undefined);
+
+    const summary = await engine.run();
+
+    expect(summary.conflicts).toBe(1);
+    expect(summary.downloaded).toBe(1);
+    expect(text(files.get("note.md"))).toBe("remote concurrent edit");
+    expect(data.conflicts).toHaveLength(1);
+    expect(data.conflicts[0]).toMatchObject({
+      originalPath: "note.md",
+      localRevision: 1,
+      remoteRevision: 2,
+      localHash,
+      remoteHash,
+      remoteDeviceId: "remote-device"
+    });
+    expect(text(files.get(data.conflicts[0]!.conflictPath))).toBe("local concurrent edit");
   });
 });
 
