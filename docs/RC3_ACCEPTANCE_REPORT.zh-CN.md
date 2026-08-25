@@ -1,6 +1,6 @@
 # Sync Tunnel 1.0.0-rc.3 验收记录
 
-本文记录 2026-08-23 在专用测试 Vault 上完成的 RC3 验收。记录不包含配对码、设备凭据、Access Secret、Admin Token、真实 Vault 正文或完整本机路径。
+本文记录 2026-08-23 至 2026-08-25 在专用测试 Vault 上完成的 RC3 验收。记录不包含配对码、设备凭据、Access Secret、Admin Token、真实 Vault 正文或完整本机路径。
 
 ## 环境
 
@@ -47,6 +47,9 @@
 - 两阶段 GC 预览能够生成，本次计划预计回收 0 B，未执行删除；
 - 公网同步入口和 Cloudflare 域名上的 `/admin/`、`/admin/v1/session` 均返回 404；管理后台仍只可通过本机管理端口访问；
 - Docker 重新构建部署后容器为 healthy，本机与公网健康接口均报告 `1.0.0-rc.3`。
+- 2026-08-25 完成 Windows 关机后开机恢复验收。该电脑启用了 Windows 快速启动，因此内核启动时间未刷新，但系统事件确认发生关机，Docker 容器在本次开机后重新启动，cloudflared 自动服务保持 Running；
+- 开机后的服务统计仍为 5 个 Vault、205 个当前文件、revision 265，doctor 为 `ok`，缺失、损坏、孤立 Chunk 均为 0；本机同步端、本机管理端和公网健康检查返回 200，公网管理接口继续返回 404；
+- 两个 Windows 测试客户端开机后再次同步，cursor 和 acknowledged revision 均为 265，各跟踪 128 个文件；pending paths、outbox、inbox、pending renames 均为 0，上传、下载、重命名、远端删除、本地删除和冲突六项计数均为 0。
 
 ## 验收中发现并修复
 
@@ -65,7 +68,6 @@
 
 ## 正式版前仍需人工完成
 
-- Windows 整机重启后验证 Docker Desktop、cloudflared、数据卷和两个客户端仍能自动恢复；
 - 把备份复制到不在服务器电脑上的加密介质并再次校验；
 - Mac 安装 RC3 后复跑双向同步和中断恢复；
 - 至少一台 Android 或 iOS 真机完成首次配对、前后台、网络切换、附件、冲突、删除恢复和重启收敛；
