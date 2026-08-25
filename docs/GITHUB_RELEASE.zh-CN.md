@@ -6,19 +6,19 @@
 
 RC 使用 `1.0.0-rc.N` 并标记 Pre-release；正式版使用 `1.0.0`。Tag、根/插件 manifest、根/插件 versions、npm package 和 lock 必须完全一致。Tag 不加 `v`，不得移动、覆盖或复用。
 
-pre-1.0 客户端/服务协议不兼容。用户更新到 1.0 必须同时更新服务和插件，使用全新的服务数据，并重新配对所有设备。RC 之间的具体升级要求以目标 Release 说明为准。
+0.x 客户端/服务协议与 1.0 不兼容；从 0.x 更新必须同时更新服务和插件，使用全新的服务数据并重新配对。1.0 RC 已使用最终协议，从 RC4 更新到 1.0.0 可以保留服务数据和设备配对，但仍建议服务端与插件同步升级。
 
 ## 本地准备
 
 ```powershell
-node .\scripts\set-plugin-version.mjs 1.0.0-rc.4
+node .\scripts\set-plugin-version.mjs 1.0.0
 Set-Location .\plugin
 npm ci
 npm run typecheck
 npm test
 npm run build
 Set-Location ..
-node .\scripts\verify-plugin-release.mjs 1.0.0-rc.4 --artifacts
+node .\scripts\verify-plugin-release.mjs 1.0.0 --artifacts
 ```
 
 发布工作流只生成插件附件：`main.js`、`manifest.json`、`styles.css`、`SHA256SUMS.txt` 和 `plugin-sbom.cdx.json`。它不会发布服务端二进制、Docker/OCI 镜像、`latest` 标签或任何运行数据。
@@ -47,10 +47,10 @@ BRAT 只安装插件程序，不复制配置、凭据或客户端状态。找不
 在服务器电脑检出与插件完全相同的 Tag，然后本地构建：
 
 ```powershell
-git clone --branch 1.0.0-rc.4 --depth 1 https://github.com/qoxop/obsidian-sync-tunnel.git
+git clone --branch 1.0.0 --depth 1 https://github.com/qoxop/obsidian-sync-tunnel.git
 Set-Location .\obsidian-sync-tunnel
-docker build --pull --build-arg VERSION=1.0.0-rc.4 -t obsidian-sync-tunnel:1.0.0-rc.4 .
-docker run --rm obsidian-sync-tunnel:1.0.0-rc.4 version
+docker build --pull --build-arg VERSION=1.0.0 -t obsidian-sync-tunnel:1.0.0 .
+docker run --rm obsidian-sync-tunnel:1.0.0 version
 ```
 
 输出版本正确后，再按 [Docker Desktop 部署指引](DOCKER_DEPLOYMENT.zh-CN.md)初始化本地数据目录、密钥和 Compose。不要使用来源不明的第三方镜像；服务端升级和回滚都应重新检出明确 Tag 并使用该 Tag 的 Dockerfile 构建。

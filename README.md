@@ -4,7 +4,7 @@
 
 一个面向个人使用的 Obsidian 自托管同步方案。服务运行在自己的 Windows 电脑上，通过 Cloudflare Tunnel 让其他电脑和手机安全连接。
 
-> 当前仍是 1.0 候选版本。测试完成前，请为真实 Vault 保留独立备份。
+> 当前稳定版本为 1.0。同步不是备份，请始终为真实 Vault 保留独立备份。
 
 ## 主要功能
 
@@ -63,7 +63,7 @@ Vault ID 是服务器上的同步空间名称，不是本地文件夹路径。�
 1. 在 Obsidian 中安装并启用 BRAT；
 2. 打开 `Settings → BRAT → Add Beta plugin`；
 3. 输入 `https://github.com/qoxop/obsidian-sync-tunnel`；
-4. 选择最新的 prerelease；
+4. 选择 Latest version，确认版本为 `1.0.0`；
 5. 在社区插件中启用 **Sync Tunnel**。
 
 然后打开 Sync Tunnel 设置向导，填写 Server URL、Vault ID、Device name 和刚生成的 Pairing code。

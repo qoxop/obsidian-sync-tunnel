@@ -1,6 +1,6 @@
 # Security
 
-Sync Tunnel is a self-hosted release candidate. Keep independent encrypted backups while validating it, and never publish credentials or Vault data in issues, logs, screenshots, or diagnostics.
+Sync Tunnel is a self-hosted synchronization service. Keep independent encrypted backups, and never publish credentials or Vault data in issues, logs, screenshots, or diagnostics.
 
 ## Deployment baseline
 

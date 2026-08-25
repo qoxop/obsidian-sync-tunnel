@@ -4,9 +4,16 @@ All notable changes to Sync Tunnel are documented here. Semantic Versioning comp
 
 ## Unreleased
 
+## 1.0.0 - 2026-08-25
+
 ### User interface
 
 - Make the excluded-paths editor fill the available width in Obsidian's mobile settings layout.
+
+### Stable release
+
+- Declare the protocol 1 implementation stable after Windows, macOS and mobile cross-device acceptance.
+- Keep server distribution source-only: GitHub Releases contain only the unofficial Obsidian plugin, checksums and its SBOM.
 
 ## 1.0.0-rc.4 - 2026-08-25
 

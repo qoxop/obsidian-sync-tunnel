@@ -2,11 +2,11 @@ name: obsidian-sync-tunnel
 
 services:
   sync-server:
-    image: obsidian-sync-tunnel:${OBSIDIAN_SYNC_VERSION:-1.0.0-rc.4}
+    image: obsidian-sync-tunnel:${OBSIDIAN_SYNC_VERSION:-1.0.0}
     build:
       context: .
       args:
-        VERSION: ${OBSIDIAN_SYNC_VERSION:-1.0.0-rc.4}
+        VERSION: ${OBSIDIAN_SYNC_VERSION:-1.0.0}
     container_name: obsidian-sync-server
     restart: unless-stopped
     init: true

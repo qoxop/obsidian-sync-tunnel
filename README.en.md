@@ -4,7 +4,7 @@ English | [简体中文](README.md)
 
 A personal, self-hosted Obsidian sync service. The server runs on your own Windows computer, while Cloudflare Tunnel connects your other computers and mobile devices.
 
-> This is still a 1.0 release candidate. Keep an independent backup of every real Vault while testing.
+> The current stable release is 1.0. Sync is not backup; always keep an independent copy of every real Vault.
 
 ## What it does
 
@@ -41,7 +41,7 @@ The Vault ID identifies a server-side sync space, not a local folder.
 
 ## Install the Obsidian plugin
 
-Install and enable BRAT, choose **Add Beta plugin**, and enter `https://github.com/qoxop/obsidian-sync-tunnel`.
+Install and enable BRAT, choose **Add Beta plugin**, enter `https://github.com/qoxop/obsidian-sync-tunnel`, and select **Latest version**. Confirm that BRAT shows `1.0.0`.
 
 Enable **Sync Tunnel**, then use its setup wizard to enter the Cloudflare URL, Vault ID, device name, and pairing code. Keep the **Recommended** profile and **Safe merge** for the first sync. Run sync a second time and confirm every change counter is zero before enabling automatic sync.
 
@@ -56,7 +56,7 @@ Only disaster recovery requires stopping the service. See [Docker deployment and
 - Server data and backups are not end-to-end encrypted. Use disk encryption and an off-device encrypted backup.
 - The Full profile may copy secrets stored by other plugins; Recommended is the normal choice.
 - Never route the local admin port through Cloudflare or bind it to a LAN address.
-- Keep an independent copy of real Vaults until the release is fully validated.
+- Keep an independent copy of every real Vault.
 
 Technical details are in [ARCHITECTURE.md](docs/ARCHITECTURE.md), [PROTOCOL_1.0.en.md](docs/PROTOCOL_1.0.en.md), [TESTING.md](docs/TESTING.md), and [Troubleshooting](docs/TROUBLESHOOTING.en.md).
 

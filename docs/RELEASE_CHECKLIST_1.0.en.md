@@ -14,11 +14,11 @@
 - Allow the repository Actions token to create Releases.
 - Never store Cloudflare, Admin/device credentials or real Vault data in Actions.
 
-## RC publication
+## Stable publication
 
-After manual approval, commit the synchronized `1.0.0-rc.4` manifest/package/versions files, push main, create an annotated `1.0.0-rc.4` tag, and push the tag. The workflow publishes only the three unofficial plugin assets, checksums, CycloneDX SBOM and a prerelease. It does not publish server binaries or container images.
+After manual approval, commit the synchronized `1.0.0` manifest/package/versions files, push main, create an annotated `1.0.0` tag, and push the tag. The workflow publishes only the three unofficial plugin assets, checksums and CycloneDX SBOM. It does not publish server binaries or container images.
 
-Verify the release flag, asset hashes and BRAT installation. Run manual acceptance using downloaded plugin assets and a server built locally from the Dockerfile at the same immutable Tag.
+Verify that the release is not marked as a prerelease, check asset hashes and BRAT installation, and build the server locally from the Dockerfile at the same immutable Tag.
 
 ## Stable gate
 
