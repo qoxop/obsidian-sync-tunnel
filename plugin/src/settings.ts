@@ -179,6 +179,7 @@ export class SyncTunnelSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+	  .setClass("sync-tunnel-excluded-paths")
 	  .setName(tr("排除路径", "Excluded paths"))
 	  .setDesc(tr("每行一个 glob。** 匹配任意目录，* 匹配单层。", "One glob per line. ** crosses directories and * matches one segment."))
       .addTextArea((area) => area

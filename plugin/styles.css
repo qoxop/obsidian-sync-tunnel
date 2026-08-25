@@ -46,4 +46,18 @@
 
 @media (max-width: 700px) {
   .sync-tunnel-diff-grid { grid-template-columns: 1fr; }
+
+  .sync-tunnel-excluded-paths {
+    align-items: stretch;
+  }
+
+  .sync-tunnel-excluded-paths .setting-item-control,
+  .sync-tunnel-excluded-paths textarea {
+    width: 100%;
+  }
+
+  .sync-tunnel-excluded-paths textarea {
+    min-height: 8rem;
+    resize: vertical;
+  }
 }

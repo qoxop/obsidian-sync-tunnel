@@ -4,6 +4,10 @@ All notable changes to Sync Tunnel are documented here. Semantic Versioning comp
 
 ## Unreleased
 
+### User interface
+
+- Make the excluded-paths editor fill the available width in Obsidian's mobile settings layout.
+
 ## 1.0.0-rc.4 - 2026-08-25
 
 ### Reliability
