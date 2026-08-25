@@ -4,6 +4,8 @@ All notable changes to Sync Tunnel are documented here. Semantic Versioning comp
 
 ## Unreleased
 
+## 1.0.0-rc.4 - 2026-08-25
+
 ### Reliability
 
 - Record optimistic upload and resumed-upload revision conflicts in the conflict center, while preserving the local bytes before applying the remote revision.

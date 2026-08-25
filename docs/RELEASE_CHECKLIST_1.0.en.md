@@ -16,10 +16,10 @@
 
 ## RC publication
 
-After manual approval, commit the synchronized `1.0.0-rc.3` manifest/package/versions files, push main, create an annotated `1.0.0-rc.3` tag, and push the tag. The workflow publishes only the three unofficial plugin assets, checksums, CycloneDX SBOM and a prerelease. It does not publish server binaries or container images.
+After manual approval, commit the synchronized `1.0.0-rc.4` manifest/package/versions files, push main, create an annotated `1.0.0-rc.4` tag, and push the tag. The workflow publishes only the three unofficial plugin assets, checksums, CycloneDX SBOM and a prerelease. It does not publish server binaries or container images.
 
 Verify the release flag, asset hashes and BRAT installation. Run manual acceptance using downloaded plugin assets and a server built locally from the Dockerfile at the same immutable Tag.
 
 ## Stable gate
 
-Pass the full manual checklist and seven-day RC soak; resolve high-severity security/dependency findings; complete off-machine restore; test clean installation; accurately disclose platform coverage and known limits. Then publish a new immutable `1.0.0` tag. Never move an existing tag or assemble mismatched assets manually.
+Pass the full manual checklist; resolve high-severity security/dependency findings; complete off-machine restore; test clean installation; accurately disclose platform coverage and known limits. Then publish a new immutable `1.0.0` tag. Never move an existing tag or assemble mismatched assets manually.
